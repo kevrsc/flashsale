@@ -57,3 +57,4 @@ The landing page and the inventory module in one application, plus local Postgre
 - Decision: entry 1 is the tracer bullet. The stories are one lane, in build order. Entry 2, the admission bound, follows the tracer because it is the uncertain slice (user approved the set, 2026-09-29).
 - Decision: entry 5 includes the sold-out hint. Entry 9 is the closing end-to-end suite, after the refactor sweep (user, 2026-09-29).
 - Decision: the numeric admission bound stays a setting on entry 2. It is not chosen in this breakdown (2026-09-29).
+- Decision: every story has a plan checkpoint and a done checkpoint, so an unattended run waits for a person to approve the plan before work and to continue after the story closes (user, 2026-09-29).

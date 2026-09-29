@@ -9,6 +9,8 @@ verify = "Order 1 unit as a new user ID while the pool holds it, and confirm the
 covers = ["CAP-1"]
 after = []
 hitl = true
+plan_checkpoint = true
+done_checkpoint = true
 risk = "medium"
 references = ["architecture — _bmad-output/initiative-flash-sale-inventory/architecture-flash-sale-inventory/architecture-flash-sale-inventory.md, AD-1, AD-3, AD-5, AD-9, AD-10"]
 
@@ -21,6 +23,8 @@ verify = "With the pool above zero, more attempts than the bound arrive together
 covers = ["CAP-1"]
 after = [1]
 hitl = false
+plan_checkpoint = true
+done_checkpoint = true
 risk = "high"
 unknown = "The numeric bound is not pinned. This story uses a small setting and does not choose the production number."
 references = ["architecture — _bmad-output/initiative-flash-sale-inventory/architecture-flash-sale-inventory/architecture-flash-sale-inventory.md, AD-4"]
@@ -34,6 +38,8 @@ verify = "After a successful order the same user is told to wait one hour with n
 covers = ["CAP-3", "CAP-4"]
 after = [2]
 hitl = false
+plan_checkpoint = true
+done_checkpoint = true
 risk = "medium"
 references = ["architecture — _bmad-output/initiative-flash-sale-inventory/architecture-flash-sale-inventory/architecture-flash-sale-inventory.md, AD-3, AD-6"]
 
@@ -46,6 +52,8 @@ verify = "Ask for more than the pool while at least one unit remains, and for mo
 covers = ["CAP-5", "CAP-6"]
 after = [3]
 hitl = false
+plan_checkpoint = true
+done_checkpoint = true
 risk = "medium"
 
 [[entry]]
@@ -57,6 +65,8 @@ verify = "When the pool is empty, an order sees sold out, with nothing deducted 
 covers = ["CAP-2"]
 after = [4]
 hitl = false
+plan_checkpoint = true
+done_checkpoint = true
 risk = "medium"
 references = ["architecture — _bmad-output/initiative-flash-sale-inventory/architecture-flash-sale-inventory/architecture-flash-sale-inventory.md, AD-4"]
 
@@ -69,6 +79,8 @@ verify = "A blank user ID, and a quantity of 0, each insert no customer row, lea
 covers = ["CAP-8"]
 after = [5]
 hitl = false
+plan_checkpoint = true
+done_checkpoint = true
 risk = "low"
 references = ["glossary — _bmad-output/initiative-flash-sale-inventory/spec-flash-sale-inventory/glossary.md, Not accepted"]
 
@@ -81,6 +93,8 @@ verify = "After success, wait, refusal, sold out, not accepted, and a gate turn-
 covers = ["CAP-7"]
 after = [6]
 hitl = false
+plan_checkpoint = true
+done_checkpoint = true
 risk = "low"
 references = ["architecture — _bmad-output/initiative-flash-sale-inventory/architecture-flash-sale-inventory/architecture-flash-sale-inventory.md, AD-8"]
 
@@ -93,6 +107,8 @@ verify = "The epic Done when checks still pass on the local service after the cl
 covers = []
 after = [1, 2, 3, 4, 5, 6, 7]
 hitl = false
+plan_checkpoint = true
+done_checkpoint = true
 risk = "low"
 
 [[entry]]
@@ -104,4 +120,6 @@ verify = "The suite passes the epic Done when checks on the local service."
 covers = ["CAP-1", "CAP-2", "CAP-3", "CAP-4", "CAP-5", "CAP-6", "CAP-7", "CAP-8"]
 after = [8]
 hitl = false
+plan_checkpoint = true
+done_checkpoint = true
 risk = "low"
