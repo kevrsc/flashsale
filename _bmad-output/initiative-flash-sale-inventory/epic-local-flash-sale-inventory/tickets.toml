@@ -1,0 +1,107 @@
+# Stories in build order. id is stable and is not the order.
+
+[[entry]]
+id = 1
+type = "story"
+title = "One order reduces the pool and sends the event"
+description = "Stands up the local Boot application, Compose, and the seeded item, and one successful order through the page and an inventory transaction whose pool update matches the seeded row only while it still holds the units, committed with the order-event row, with Kafka after that commit."
+verify = "Order 1 unit as a new user ID while the pool holds it, and confirm the page says the order is in process, the pool drops by 1, and one JSON message on inventory.order-accepted has unitsDeducted 1."
+covers = ["CAP-1"]
+after = []
+hitl = true
+risk = "medium"
+references = ["architecture — _bmad-output/initiative-flash-sale-inventory/architecture-flash-sale-inventory/architecture-flash-sale-inventory.md, AD-1, AD-3, AD-5, AD-9, AD-10"]
+
+[[entry]]
+id = 2
+type = "story"
+title = "Extra attempts wait and are not sold out"
+description = "Adds a real admission bound in front of story 1's conditional inventory transaction: attempts past the bound open no database transaction, the page retries them with jitter, and a waiting shopper is not told sold out while the pool is above zero."
+verify = "With the pool above zero, more attempts than the bound arrive together, an attempt that does not get a transaction is not shown sold out, and a retry can still receive in process."
+covers = ["CAP-1"]
+after = [1]
+hitl = false
+risk = "high"
+unknown = "The numeric bound is not pinned. This story uses a small setting and does not choose the production number."
+references = ["architecture — _bmad-output/initiative-flash-sale-inventory/architecture-flash-sale-inventory/architecture-flash-sale-inventory.md, AD-4"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "The wait and the limit of 3 hold under the lock"
+description = "On the admitted transaction from story 2, creates the customer row when the user id has none, locks that row and then the item row, writes the successful units and the next-allowed time from PostgreSQL's clock plus one hour, enforces the one-hour wait and the limit of 3 as a sum across orders, and leaves a short pool or a short remaining limit to story 4."
+verify = "After a successful order the same user is told to wait one hour with nothing deducted and no event, an order whose units make the successful total 3 meets the limit, and once that hour has elapsed a further order with no units left and the pool above zero is refused with no event."
+covers = ["CAP-3", "CAP-4"]
+after = [2]
+hitl = false
+risk = "medium"
+references = ["architecture — _bmad-output/initiative-flash-sale-inventory/architecture-flash-sale-inventory/architecture-flash-sale-inventory.md, AD-3, AD-6"]
+
+[[entry]]
+id = 4
+type = "story"
+title = "A short pool or a short limit keeps a subset"
+description = "On the locked transaction from story 3, deducts the smaller of the request, the pool, and the units left, commits that number on the customer row and in the order event, refuses when no units are left once the one-hour wait has elapsed and the pool is above zero, and does not add the empty-pool outcome."
+verify = "Ask for more than the pool while at least one unit remains, and for more than the units left while the pool could cover the request, and each succeeds with the page saying in process and unitsDeducted equal to that smaller number, while zero units left after the one-hour wait and with the pool above zero is refused with no event."
+covers = ["CAP-5", "CAP-6"]
+after = [3]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 5
+type = "story"
+title = "An empty pool is sold out, even during the wait"
+description = "On the locked decision from story 4, returns sold out before the one-hour wait from story 3 when the pool is not above zero, with no deduction and no event, and a sold-out hint may answer a later attempt without a transaction after a statement has shown the pool is empty, without deducting."
+verify = "When the pool is empty, an order sees sold out, with nothing deducted and no event, including for a customer who is also in the one-hour wait, and a later attempt can be answered from the sold-out hint without a deduction."
+covers = ["CAP-2"]
+after = [4]
+hitl = false
+risk = "medium"
+references = ["architecture — _bmad-output/initiative-flash-sale-inventory/architecture-flash-sale-inventory/architecture-flash-sale-inventory.md, AD-4"]
+
+[[entry]]
+id = 6
+type = "story"
+title = "A blank user ID or quantity is not an order"
+description = "On the order path story 5 left, rejects a blank user ID before a transaction and inserts no customer row, and rejects a quantity that is not a positive integer before any deduction, leaving the pool unchanged and sending no event."
+verify = "A blank user ID, and a quantity of 0, each insert no customer row, leave the pool unchanged, send no event, and the page says the order was not accepted."
+covers = ["CAP-8"]
+after = [5]
+hitl = false
+risk = "low"
+references = ["glossary — _bmad-output/initiative-flash-sale-inventory/spec-flash-sale-inventory/glossary.md, Not accepted"]
+
+[[entry]]
+id = 7
+type = "story"
+title = "The log shows request and database totals"
+description = "The inventory module logs running request, query, and update totals for a successful order and the outcomes from stories 2 through 6, counting every inventory JDBC statement and every outbox-publisher statement, including statements that change zero rows, and those totals are not a success if a deducted unit was not in the pool or a customer exceeds 3."
+verify = "After success, wait, refusal, sold out, not accepted, and a gate turn-away, the log shows request, query, and update totals, and opening the page without ordering does not count as a request."
+covers = ["CAP-7"]
+after = [6]
+hitl = false
+risk = "low"
+references = ["architecture — _bmad-output/initiative-flash-sale-inventory/architecture-flash-sale-inventory/architecture-flash-sale-inventory.md, AD-8"]
+
+[[entry]]
+id = 8
+type = "story"
+title = "Refactor sweep"
+description = "Cleans up only what the build records and deferred review findings justify, and takes no new shopper behavior."
+verify = "The epic Done when checks still pass on the local service after the cleanup."
+covers = []
+after = [1, 2, 3, 4, 5, 6, 7]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 9
+type = "story"
+title = "The sale checks run end to end"
+description = "Runs the epic Done when paths as one suite on the local service after the refactor sweep, and adds no shopper behavior."
+verify = "The suite passes the epic Done when checks on the local service."
+covers = ["CAP-1", "CAP-2", "CAP-3", "CAP-4", "CAP-5", "CAP-6", "CAP-7", "CAP-8"]
+after = [8]
+hitl = false
+risk = "low"

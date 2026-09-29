@@ -54,3 +54,6 @@ The landing page and the inventory module in one application, plus local Postgre
 
 - Decision: this is the only epic. Scaffold, Compose, and the database seed are its first story, not a separate epic (user, 2026-09-29).
 - Decision: the order service and accounts stay touch points. This epic publishes the order event and collects the user ID (user, 2026-09-29).
+- Decision: entry 1 is the tracer bullet. The stories are one lane, in build order. Entry 2, the admission bound, follows the tracer because it is the uncertain slice (user approved the set, 2026-09-29).
+- Decision: entry 5 includes the sold-out hint. Entry 9 is the closing end-to-end suite, after the refactor sweep (user, 2026-09-29).
+- Decision: the numeric admission bound stays a setting on entry 2. It is not chosen in this breakdown (2026-09-29).
