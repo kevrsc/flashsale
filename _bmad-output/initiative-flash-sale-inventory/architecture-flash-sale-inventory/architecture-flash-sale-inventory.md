@@ -1,0 +1,196 @@
+---
+name: Flash-sale inventory
+type: architecture-spine
+purpose: build-substrate
+altitude: initiative
+paradigm: transactional outbox
+scope: Flash-sale inventory service and its boundary with order services
+status: final
+created: 2026-09-29
+updated: 2026-09-29
+binds:
+  - FR-1
+  - FR-2
+  - FR-3
+  - FR-4
+  - FR-5
+  - FR-6
+  - SM-1
+  - SM-2
+  - SM-C1
+sources:
+  - prd-flash-sale-inventory/prd-flash-sale-inventory.md
+companions:
+  - walkthrough-flash-sale-inventory.html
+---
+
+# Architecture Spine — Flash-sale inventory
+
+## Design Paradigm
+
+Transactional outbox. The inventory module commits the deduction and the order-event row in one PostgreSQL transaction. Spring Modulith externalization mode `outbox` sends that row to Kafka after the commit. The page module renders the outcome the inventory module returns. It does not decide, publish, or open a database transaction.
+
+## Invariants & Rules
+
+```mermaid
+flowchart LR
+  page --> inventory
+  inventory --> topic["Kafka topic inventory.order-accepted"]
+  topic --> orderService["Order service"]
+```
+
+### AD-1 — Outbox commit [ADOPTED]
+
+- **Binds:** inventory module, order event
+- **Prevents:** a deduction with no order event, an order event with no deduction, and a second outbox row for the same deduction
+- **Rule:** The inventory entry point opens and commits one PostgreSQL transaction. The page does not start a transaction around that call. A successful order publishes one Modulith event inside that transaction, and that publish is the only outbox write. Application code does not insert into outbox tables. The event, the pool update, and the customer-row update commit together. The send to Kafka happens after that commit and after the outcome has been returned to the page. A broker delay does not change the shopper outcome. If the conditional update changes no row, the transaction rolls back, including any customer insert or customer update in that transaction, and no outbox row remains.
+
+### AD-2 — Module direction [ADOPTED]
+
+- **Binds:** page module, inventory module
+- **Prevents:** a controller deducting inventory, the inventory module importing page types, and the page issuing database statements
+- **Rule:** The inventory module owns the conditional update, the customer and item rows, the admission gate, and outbox publication. The page module depends on the inventory module and only renders the outcomes inventory returns. The inventory module does not depend on the page module. The page module runs no database statements.
+
+### AD-3 — Pool mutation [ADOPTED]
+
+- **Binds:** FR-1, FR-3, FR-4, FR-5, FR-6, SM-C1
+- **Prevents:** two requests deducting the same remaining units, a deduction during the one-hour wait, or a deduction past the customer limit of 3
+- **Rule:** After the customer row is locked, and before the item update, read that row's successful units and next-allowed time. Then lock the item row and read the pool. When the pool is not above zero, the outcome is sold out, the transaction rolls back, and no outbox row is written. When the pool is above zero and the next-allowed time is still in the future, the outcome is the one-hour wait, with no pool change and no outbox row. When the pool is above zero, the customer is not in the wait, and no units are left under the limit of 3, the outcome is refused, with no pool change and no outbox row. Otherwise the units are the smaller of the requested units, the pool just read, and the units left on the locked customer row. The pool changes only by a conditional update that matches the seeded item id and only when the row still holds those units. On that match, the same transaction updates the locked customer row. A quantity that is not a positive integer matches nothing and writes no outbox row. If the conditional update changes no row while the pool is still above zero, recompute the smaller-of under the locks already held and retry the update. That miss is not sold out.
+
+### AD-4 — Admission and response order [ADOPTED]
+
+- **Binds:** FR-2, FR-3, the high-volume contention requirement
+- **Prevents:** a connection storm on the item row, a second count of available units, sold-out shown while the pool is above zero, first-request jitter, and a deadlock from opposite lock order
+- **Rule:** Only a bounded number of order attempts open a transaction on the item row. The rest are turned away with no transaction. The page does not render that turn-away. It retries the attempt with jitter until inventory returns a shopper outcome from AD-7. An attempt still waiting is not sold out while the pool is above zero. Jitter applies only to that retry. The only record of units still available is the item row's pool. A sold-out hint may answer later attempts without a transaction only after a statement has shown the pool is not above zero. The hint is not a count and is not used to deduct. Any transaction that locks both rows, including a read, locks the customer row and then the item row. A check that only needs the item row does not then lock the customer row.
+
+### AD-5 — Order event [ADOPTED]
+
+- **Binds:** inventory module, the separate order service
+- **Prevents:** the order service decoding another format, fulfilling a different quantity, or opening a second purchase for the same order id
+- **Rule:** The topic is `inventory.order-accepted`. Inventory is the only producer. The order id is generated inside the AD-1 transaction, stored in that commit, and never reused, including after a restart. It is a unique opaque string and the Kafka message key. The value is UTF-8 JSON with exactly these properties and no envelope: string `orderId`, string `userId`, string `itemId`, and integer `unitsDeducted`. `unitsDeducted` is the number of units the successful conditional update subtracted. Publication is at-least-once through `spring-modulith-events-kafka`. The order service treats `orderId` as an idempotency key and does not open a second purchase for it. Payment, fulfillment, and the original requested quantity are absent.
+
+### AD-6 — Customer row [ADOPTED]
+
+- **Binds:** FR-3, FR-4, FR-5
+- **Prevents:** a per-order history, an application clock, two rows for one user id, and a customer list loaded before anyone can order
+- **Rule:** Flyway creates the customer table with a unique key on user id. One row stores the units that customer has successfully ordered and the earliest time they may order again. User id and item id compare as exact strings, with no trim and no case fold. A blank user id is rejected before a transaction, inserts no customer row, and uses the not-accepted outcome in AD-7. When an admitted transaction finds no row, it inserts one row for that user id before it locks the item row. If that insert conflicts, the transaction locks the existing row and continues. It does not insert a second row. A successful order writes the units and the next-allowed time in the AD-1 transaction. The next-allowed time is PostgreSQL's clock plus one hour. The page does not compute the wait.
+
+### AD-7 — Landing page [ADOPTED]
+
+- **Binds:** page module, FR-1 through FR-6
+- **Prevents:** a second client deducting inventory, a second HTTP order API, a second item id, and a rendered outcome that is not the one inventory returned
+- **Rule:** The same Boot application serves one Thymeleaf form. That form is the only HTTP route that submits an order. The shopper enters a user ID and a positive integer quantity. The page does not embed an item id. It submits the item id the inventory module reads from the single seeded item row. The controller calls the inventory module in-process and does not start a database transaction. The user ID is an opaque account id. This application does not authenticate it and does not store a user table. Inventory alone applies AD-3. The page renders the returned outcome and does not replace it. Shopper outcomes are only: in process, wait one hour, sold out, refused, and not accepted. Not accepted is the outcome for a non-positive quantity or a blank user id. It deducts nothing and sends no event. The page shows that the order was not accepted.
+
+### AD-8 — Sale counts [ADOPTED]
+
+- **Binds:** SM-1, SM-2, SM-C1
+- **Prevents:** a second tally in the page, a counter table on the hot path, a metrics endpoint in place of the log, and two different database totals for the same statements
+- **Rule:** The inventory module alone keeps running totals and writes them to the application log. A request is an order attempt that reaches inventory, including success, the one-hour wait, refusal, sold out, not accepted, and an admission-gate turn-away. Opening the page without ordering is not a request. Every database statement from inventory JDBC and from the outbox publisher counts, including statements that change zero rows. A `SELECT` is a query. An `INSERT`, `UPDATE`, or `DELETE` is an update. The totals are process memory in the one process from AD-10. They reset when that process restarts. The counts do not make a sale successful. A deducted unit that was not in the pool, or a customer above the limit of 3, fails SM-C1.
+
+### AD-9 — Schema ownership [ADOPTED]
+
+- **Binds:** inventory module, PostgreSQL
+- **Prevents:** Hibernate generating schema, and a hand-copied outbox DDL drifting from Namastack
+- **Rule:** Flyway creates and changes the item and customer tables. The customer table has the unique user-id key from AD-6. The item table has one seeded row, and the conditional update matches that row's id. A Flyway migration inserts that item and its starting pool. The inventory module uses JDBC for those rows. Namastack's JDBC starter creates the outbox tables. Flyway does not create them. Application code does not write them except through the Modulith publish in AD-1. Hibernate does not create or alter schema.
+
+### AD-10 — Local topology [ADOPTED]
+
+- **Binds:** the whole service
+- **Prevents:** two host processes, one configuration using Compose service names while another uses localhost, and a second deployed environment in this build
+- **Rule:** This spine has one environment and one Boot process on the host. Docker Compose runs `postgres:18.6` and `apache/kafka:4.3.1`. PostgreSQL is `localhost:5432`, database `flashsale`, user `flashsale`, password `flashsale`. Kafka is advertised and reached at `localhost:9092`. Compose creates the topic `inventory.order-accepted` before the application publishes. Application configuration uses these localhost addresses.
+
+## Consistency Conventions
+
+| Concern | Convention |
+| --- | --- |
+| Naming | Modulith modules are `inventory` and `page`. The topic is `inventory.order-accepted`. JSON properties are `orderId`, `userId`, `itemId`, `unitsDeducted`. |
+| Data and formats | Order id, user id, and item id are exact opaque strings. Units are integers. The one-hour deadline uses PostgreSQL's clock. |
+| State and cross-cutting | Customer limit is 3. Shopper outcomes are the AD-7 set. Counts are log lines from the inventory module. No account store. |
+| Build | Gradle Groovy, the current Spring Initializr default. The Spring Boot parent coordinate is `4.1.1`. The generator token `4.1.1.RELEASE` is not a Maven Central coordinate. Dependencies are the stack table. Initializr's Modulith checkbox and Kafka checkbox are not substitutes for `spring-modulith-starter-namastack` and `spring-modulith-events-kafka`. |
+
+## Stack
+
+| Name | Version |
+| --- | --- |
+| Java | 17 |
+| Spring Boot | 4.1.1 |
+| Spring Modulith | 2.1.1 |
+| spring-modulith-starter-namastack | 2.1.1 |
+| namastack-outbox-starter-jdbc | 1.7.3 |
+| spring-modulith-events-kafka | 2.1.1 |
+| spring-kafka | 4.1.1 |
+| spring-boot-kafka | 4.1.1 |
+| spring-boot-starter-webmvc | 4.1.1 |
+| spring-boot-starter-jdbc | 4.1.1 |
+| spring-boot-starter-thymeleaf | 4.1.1 |
+| spring-boot-starter-flyway | 4.1.1 |
+| flyway-database-postgresql | 12.4.0 |
+| org.postgresql:postgresql | Spring Boot 4.1.1 BOM |
+| PostgreSQL | 18.6 |
+| Docker image postgres | 18.6 |
+| Apache Kafka | 4.3.1 |
+| Docker image apache/kafka | 4.3.1 |
+
+## Structural Seed
+
+```mermaid
+flowchart LR
+  browser --> app["One Boot process on the host"]
+  subgraph compose["Docker Compose"]
+    pg["postgres:18.6 localhost:5432"]
+    kafka["apache/kafka:4.3.1 localhost:9092"]
+  end
+  app --> pg
+  app --> kafka
+```
+
+```mermaid
+erDiagram
+  CUSTOMER ||--o{ OUTBOX_RECORD : "same committed transaction"
+  ITEM ||--o{ OUTBOX_RECORD : "same committed transaction"
+```
+
+```mermaid
+sequenceDiagram
+  participant Page
+  participant Inventory
+  participant DB as PostgreSQL
+  participant Kafka
+  Page->>Inventory: userId, seeded itemId, quantity
+  Inventory->>DB: lock customer, lock item, conditional update, Modulith outbox event
+  DB-->>Inventory: commit
+  Inventory-->>Page: shopper outcome
+  Inventory->>Kafka: JSON order event after commit
+```
+
+```text
+src/main/java/<application>/
+  inventory/          # deduction, gate, customer and item rows, outbox event
+  page/               # Thymeleaf form and outcome rendering
+src/main/resources/
+  db/migration/       # Flyway: item, customer, unique user id, item seed
+  templates/          # landing page
+compose.yaml          # postgres:18.6 and apache/kafka:4.3.1, topic created here
+```
+
+## Capability → Architecture Map
+
+| Capability / Area | Lives in | Governed by |
+| --- | --- | --- |
+| Place an order, FR-1 through FR-6 | inventory module | AD-1, AD-3, AD-4, AD-6 |
+| Landing page | page module | AD-2, AD-7 |
+| Order event to other services | inventory outbox, then Kafka | AD-1, AD-5 |
+| Request and database counts, SM-1, SM-2, SM-C1 | inventory log | AD-3, AD-8 |
+| Schema | Flyway and Namastack JDBC | AD-6, AD-9 |
+| Local run | one host process and Compose | AD-10 |
+
+## Deferred
+
+- Admission-gate concurrency number. Turn-away stays a retry signal, not a shopper outcome. Revisit the number when a load run shows connections queueing on the item row.
+- Order-id text format. The id is already unique, stored in the commit, and never reused. Revisit the character format only inside the inventory module.
+- Starting pool quantity. It lives only on the seeded item row. Revisit when that Flyway migration is written.
+- Wording of the totals log line. Revisit if a scraper is added.
+- HTTP path of the form. Revisit inside the page module.
+- Process supervision, health checks, and alerting on an outbox row that has not been published. The row remains until publish, and the publisher retries. Revisit when the process is no longer started by hand.
+- A hosted environment. Revisit when a launch target exists.
+- Restock, and clearing the sold-out hint. Revisit only if the pool can increase after it hits zero.

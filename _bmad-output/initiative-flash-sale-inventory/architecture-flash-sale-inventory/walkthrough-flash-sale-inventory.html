@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flash-sale inventory — architecture walkthrough</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1c1915;
+      --muted: #5c564c;
+      --line: #e4ddd2;
+      --paper: #faf7f2;
+      --card: #fff;
+      --accent: #9a3412;
+      --ok: #1f6b4a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+    }
+    main {
+      max-width: 52rem;
+      margin: 0 auto;
+      padding: 2.5rem 1.5rem 6rem;
+    }
+    .slide { display: none; }
+    .slide.active { display: block; }
+    h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 0.75rem; }
+    h2 { font-size: 1.5rem; line-height: 1.25; margin: 0 0 1rem; }
+    p { font-size: 1.125rem; line-height: 1.5; margin: 0 0 0.9rem; }
+    .lede { color: var(--muted); }
+    ul { margin: 0.25rem 0 0; padding-left: 1.2rem; }
+    li { font-size: 1.125rem; line-height: 1.45; margin: 0.35rem 0; }
+    figure { margin: 1.25rem 0 0; }
+    svg { width: 100%; height: auto; display: block; }
+    .note {
+      margin-top: 1.25rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+    nav {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.75rem 1.5rem;
+      background: var(--card);
+      border-top: 1px solid var(--line);
+    }
+    button {
+      font: inherit;
+      font-size: 1rem;
+      padding: 0.5rem 0.9rem;
+      border: 1px solid var(--ink);
+      background: var(--ink);
+      color: var(--paper);
+      border-radius: 0.4rem;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.35; cursor: default; }
+    #progress { color: var(--muted); font-size: 0.95rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="slide active" aria-labelledby="s1">
+      <h1 id="s1">Flash-sale inventory</h1>
+      <p>This service decides who receives a unit when more people want the item than the inventory pool holds.</p>
+      <p>Payment and shipping stay in other services. They begin only after this service has deducted a unit and sent an order event.</p>
+      <p class="lede">The architecture spine is the contract the build follows. These slides explain it.</p>
+    </section>
+
+    <section class="slide" aria-labelledby="s2">
+      <h2 id="s2">Two modules, one application</h2>
+      <p>The page collects a user id and a quantity. Inventory decides what happens to the pool. The page cannot write the database.</p>
+      <figure>
+        <svg viewBox="0 0 640 160" role="img" aria-labelledby="s2d">
+          <title id="s2d">The page calls inventory. Inventory writes PostgreSQL and later Kafka.</title>
+          <rect x="16" y="48" width="140" height="64" rx="8" fill="#fff" stroke="#1c1915"/>
+          <rect x="250" y="48" width="140" height="64" rx="8" fill="#fff" stroke="#9a3412" stroke-width="2"/>
+          <rect x="484" y="16" width="140" height="52" rx="8" fill="#fff" stroke="#1c1915"/>
+          <rect x="484" y="92" width="140" height="52" rx="8" fill="#fff" stroke="#1c1915"/>
+          <text x="86" y="86" text-anchor="middle" font-size="16" fill="#1c1915">Page</text>
+          <text x="320" y="86" text-anchor="middle" font-size="16" fill="#1c1915">Inventory</text>
+          <text x="554" y="48" text-anchor="middle" font-size="14" fill="#1c1915">PostgreSQL</text>
+          <text x="554" y="124" text-anchor="middle" font-size="14" fill="#1c1915">Kafka</text>
+          <path d="M156 80 H250" stroke="#1c1915" marker-end="url(#arrow)"/>
+          <path d="M390 70 H484" stroke="#1c1915" marker-end="url(#arrow)"/>
+          <path d="M390 100 H484" stroke="#1c1915" marker-end="url(#arrow)"/>
+          <defs>
+            <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+              <path d="M0 0 L8 4 L0 8 Z" fill="#1c1915"/>
+            </marker>
+          </defs>
+        </svg>
+      </figure>
+    </section>
+
+    <section class="slide" aria-labelledby="s3">
+      <h2 id="s3">What the shopper can be told</h2>
+      <ul>
+        <li>The order is in process.</li>
+        <li>Wait one hour before ordering again.</li>
+        <li>The item has sold out.</li>
+        <li>The order is refused, because this customer has no units left under the limit of 3.</li>
+        <li>The order was not accepted, because the quantity or the user id was blank.</li>
+      </ul>
+      <p>Sold out wins when the pool is empty, even during the one-hour wait.</p>
+    </section>
+
+    <section class="slide" aria-labelledby="s4">
+      <h2 id="s4">The locks decide the number</h2>
+      <p>The transaction locks the customer row, then the item row. It reads both before it chooses a number.</p>
+      <p>The units taken are the smaller of what was asked, what the pool still holds, and what this customer has left of the limit of 3. One customer has one row. The wait ends at the database clock plus one hour.</p>
+      <figure>
+        <svg viewBox="0 0 640 120" role="img" aria-labelledby="s4d">
+          <title id="s4d">Units taken are the smaller of the request, the pool, and the units left under 3.</title>
+          <rect x="16" y="36" width="150" height="48" rx="8" fill="#fff" stroke="#1c1915"/>
+          <rect x="190" y="36" width="150" height="48" rx="8" fill="#fff" stroke="#1c1915"/>
+          <rect x="364" y="36" width="150" height="48" rx="8" fill="#fff" stroke="#1c1915"/>
+          <text x="91" y="66" text-anchor="middle" font-size="15" fill="#1c1915">Asked</text>
+          <text x="265" y="66" text-anchor="middle" font-size="15" fill="#1c1915">Pool</text>
+          <text x="439" y="66" text-anchor="middle" font-size="15" fill="#1c1915">Left of limit</text>
+          <text x="560" y="66" text-anchor="middle" font-size="15" fill="#9a3412">smaller</text>
+        </svg>
+      </figure>
+    </section>
+
+    <section class="slide" aria-labelledby="s5">
+      <h2 id="s5">One commit, then the event</h2>
+      <p>The outbox row is the order event, stored in the database with the deduction so the event cannot exist without the deduction.</p>
+      <p>A successful order writes three things in one database transaction: the customer row, the item pool, and the outbox row.</p>
+      <p>Kafka is told after that commit, and after the page has the outcome. If the pool update matches no row, the whole transaction is discarded. The customer does not keep units that were never taken.</p>
+      <figure>
+        <svg viewBox="0 0 640 120" role="img" aria-labelledby="s5d">
+          <title id="s5d">Commit the database first. Return the outcome. Then send Kafka.</title>
+          <rect x="16" y="36" width="170" height="48" rx="8" fill="#fff" stroke="#1c1915"/>
+          <rect x="235" y="36" width="170" height="48" rx="8" fill="#fff" stroke="#1c1915"/>
+          <rect x="454" y="36" width="170" height="48" rx="8" fill="#fff" stroke="#1c1915"/>
+          <text x="101" y="66" text-anchor="middle" font-size="15" fill="#1c1915">Commit</text>
+          <text x="320" y="66" text-anchor="middle" font-size="15" fill="#1c1915">Tell the page</text>
+          <text x="539" y="66" text-anchor="middle" font-size="15" fill="#1c1915">Send Kafka</text>
+          <path d="M186 60 H235" stroke="#1c1915" marker-end="url(#arrow2)"/>
+          <path d="M405 60 H454" stroke="#1c1915" marker-end="url(#arrow2)"/>
+          <defs>
+            <marker id="arrow2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+              <path d="M0 0 L8 4 L0 8 Z" fill="#1c1915"/>
+            </marker>
+          </defs>
+        </svg>
+      </figure>
+    </section>
+
+    <section class="slide" aria-labelledby="s6">
+      <h2 id="s6">What the other service receives</h2>
+      <p>The topic is <code>inventory.order-accepted</code>. The message is JSON with four fields: order id, user id, item id, and the units actually deducted.</p>
+      <p>The order id is the message key. Delivery can repeat. The same order id is the same purchase, not a second one.</p>
+    </section>
+
+    <section class="slide" aria-labelledby="s7">
+      <h2 id="s7">Many people, one item row</h2>
+      <p>Only a small number of orders open a database transaction on that item. The others wait in the application and retry. A waiting shopper is not told the item is sold out while units remain.</p>
+      <p>The item row is the only stock count. A sold-out hint may answer later requests after the row is empty. The hint never deducts a unit.</p>
+    </section>
+
+    <section class="slide" aria-labelledby="s8">
+      <h2 id="s8">Where it runs</h2>
+      <p>One application process on the host. PostgreSQL and Kafka run in Docker and are reached on localhost.</p>
+      <p>This architecture stops at that machine. A hosted environment waits until there is a launch to aim at.</p>
+    </section>
+
+    <section class="slide" aria-labelledby="s9">
+      <h2 id="s9">Left for the build</h2>
+      <ul>
+        <li>How many transactions may touch the item row at once.</li>
+        <li>The starting number of units, written once in the database seed.</li>
+      </ul>
+      <p class="note">Those choices sit inside one module. They do not change the commit, the shopper outcomes, or the order event.</p>
+    </section>
+  </main>
+  <nav>
+    <button type="button" id="prev">Back</button>
+    <span id="progress" aria-live="polite">1 / 9</span>
+    <button type="button" id="next">Next</button>
+  </nav>
+  <script>
+    const slides = Array.from(document.querySelectorAll(".slide"));
+    const prev = document.getElementById("prev");
+    const next = document.getElementById("next");
+    const progress = document.getElementById("progress");
+    let index = 0;
+
+    function show(nextIndex) {
+      index = Math.max(0, Math.min(slides.length - 1, nextIndex));
+      slides.forEach((slide, i) => slide.classList.toggle("active", i === index));
+      prev.disabled = index === 0;
+      next.disabled = index === slides.length - 1;
+      progress.textContent = (index + 1) + " / " + slides.length;
+      const heading = slides[index].querySelector("h1, h2");
+      if (heading) heading.focus({ preventScroll: true });
+    }
+
+    prev.addEventListener("click", () => show(index - 1));
+    next.addEventListener("click", () => show(index + 1));
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowRight" || event.key === "PageDown") show(index + 1);
+      if (event.key === "ArrowLeft" || event.key === "PageUp") show(index - 1);
+    });
+    slides.forEach((slide) => {
+      const heading = slide.querySelector("h1, h2");
+      if (heading) heading.tabIndex = -1;
+    });
+    show(0);
+  </script>
+</body>
+</html>

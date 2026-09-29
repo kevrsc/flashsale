@@ -1,0 +1,39 @@
+# BMad generated workflow snapshots
+_bmad/render/
+
+# Personal answers. Shared team config stays tracked.
+*.user.toml
+
+# Gradle and Java
+.gradle/
+build/
+out/
+bin/
+*.class
+*.log
+hs_err_pid*
+replay_pid*
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python tooling used by BMad scripts
+__pycache__/
+*.py[cod]
+.venv/
+.uv/
+
+# Editors and OS
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.project
+.classpath
+.settings/
+.DS_Store
+Thumbs.db
+desktop.ini
