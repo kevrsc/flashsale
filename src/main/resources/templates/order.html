@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<body>
+<form method="post" action="/">
+    <label for="userId">User ID</label>
+    <input id="userId" name="userId" type="text" required>
+    <label for="quantity">Quantity</label>
+    <input id="quantity" name="quantity" type="number" required>
+    <button type="submit">Order</button>
+</form>
+<p th:if="${outcome != null}" th:text="${outcome}"></p>
+</body>
+</html>
