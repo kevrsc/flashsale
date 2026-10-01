@@ -25,8 +25,8 @@ public class Orders {
 		String itemId = jdbc.queryForObject("SELECT id FROM item", Map.of(), String.class);
 		int updated = jdbc.update("""
 				UPDATE item
-				SET pool = pool - :units
-				WHERE id = :itemId AND pool >= :units
+				SET quantity = quantity - :units
+				WHERE id = :itemId AND quantity >= :units
 				""", Map.of("units", units, "itemId", itemId));
 		if (updated == 0) {
 			TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();

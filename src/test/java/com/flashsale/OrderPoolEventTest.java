@@ -42,8 +42,8 @@ class OrderPoolEventTest {
 	private JdbcTemplate jdbc;
 
 	@BeforeEach
-	void resetPool() {
-		jdbc.update("UPDATE item SET pool = 10 WHERE id = 'item-1'");
+	void resetQuantity() {
+		jdbc.update("UPDATE item SET quantity = 10 WHERE id = 'item-1'");
 	}
 
 	@Test
@@ -60,7 +60,7 @@ class OrderPoolEventTest {
 			assertTrue(body.contains("The order is in process"));
 			assertFalse(body.contains("name=\"itemId\""));
 			assertFalse(body.contains("item-1"));
-			assertEquals(9, pool());
+			assertEquals(9, quantity());
 			assertEquals(0, customerRows());
 
 			List<ConsumerRecord<String, String>> records = poll(consumer, Duration.ofSeconds(8), true);
@@ -81,7 +81,7 @@ class OrderPoolEventTest {
 
 	@Test
 	void zeroRowUpdateLeavesThePoolAndSendsNothing() throws Exception {
-		jdbc.update("UPDATE item SET pool = 0 WHERE id = 'item-1'");
+		jdbc.update("UPDATE item SET quantity = 0 WHERE id = 'item-1'");
 		int outboxBefore = outboxRows();
 		String userId = "user-" + UUID.randomUUID();
 		try (KafkaConsumer<String, String> consumer = consumer()) {
@@ -93,7 +93,7 @@ class OrderPoolEventTest {
 					.getContentAsString();
 
 			assertFalse(body.contains("in process"));
-			assertEquals(0, pool());
+			assertEquals(0, quantity());
 			assertEquals(outboxBefore, outboxRows());
 
 			List<ConsumerRecord<String, String>> records = poll(consumer, Duration.ofSeconds(4), false);
@@ -102,8 +102,8 @@ class OrderPoolEventTest {
 		}
 	}
 
-	private int pool() {
-		return jdbc.queryForObject("SELECT pool FROM item WHERE id = 'item-1'", Integer.class);
+	private int quantity() {
+		return jdbc.queryForObject("SELECT quantity FROM item WHERE id = 'item-1'", Integer.class);
 	}
 
 	private int customerRows() {

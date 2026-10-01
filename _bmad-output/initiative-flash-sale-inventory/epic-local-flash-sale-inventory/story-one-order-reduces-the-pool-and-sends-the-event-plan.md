@@ -62,7 +62,7 @@ context:
 - [ ] `build.gradle` -- The human generates the Gradle project at the repo root with Spring Initializr: Java 17, Gradle Groovy, Boot 4.1.1, jar, group `com.flashsale`, artifact `flashsale`. Do not select the Modulith or Kafka checkboxes. After that, the build file uses parent `4.1.1` and adds `spring-boot-starter-webmvc`, `spring-boot-starter-jdbc`, `spring-boot-starter-thymeleaf`, `spring-boot-starter-flyway`, `flyway-database-postgresql` 12.4.0, the PostgreSQL driver, `spring-modulith-starter-namastack` 2.1.1, and `spring-modulith-events-kafka` 2.1.1. -- This story's human step is the starter. The checkboxes are not the outbox stack.
 - [ ] `compose.yaml` -- Run `postgres:18.6` and `apache/kafka:4.3.1`, publish `localhost:5432` and `localhost:9092`, and create topic `inventory.order-accepted`. -- AD-10. The app on the host uses localhost, not Compose DNS.
 - [ ] `src/main/resources/application.properties` -- Point JDBC at `localhost:5432/flashsale` with user and password `flashsale`, Kafka at `localhost:9092`, Modulith externalization mode `outbox`, and Flyway on. Disable Hibernate DDL. -- One environment, outbox mode.
-- [ ] `src/main/resources/db/migration/V1__item_and_customer.sql` -- Create the item table and the customer table with a unique user id. Insert item id `item-1` with pool 10. -- AD-9. This story does not write customer rows.
+- [ ] `src/main/resources/db/migration/V1__item_and_customer.sql` -- Create the item table and the customer table with a unique user id. Insert item id `item-1` with quantity 10. -- AD-9. This story does not write customer rows.
 - [ ] `src/main/java/com/flashsale/inventory/` -- Open one transaction, read the seeded item id, and conditionally deduct the requested units only while that row still holds them. On a match, publish one Modulith event in that transaction with a new UUID `orderId` stored in the commit. On zero rows, roll back. -- AD-1 and the success path of AD-3. No wait, limit, subset, or sold-out branch.
 - [ ] `src/main/java/com/flashsale/page/` and `src/main/resources/templates/order.html` -- Thymeleaf form on `/` collects user ID and quantity, submits no item id, calls inventory in-process, and renders the returned in-process outcome. -- AD-2 and AD-7 for this path only.
 - [ ] `src/test/java/com/flashsale/` -- Cover both matrix rows: quantity 1 deducts and emits `unitsDeducted` 1; a zero-row update leaves the pool and emits nothing. -- The verify check.
@@ -92,8 +92,8 @@ The conditional update names the seeded id and the units just computed, and it c
 
 ```sql
 UPDATE item
-SET pool = pool - :units
-WHERE id = :itemId AND pool >= :units
+SET quantity = quantity - :units
+WHERE id = :itemId AND quantity >= :units
 ```
 
 Event value, no envelope:
