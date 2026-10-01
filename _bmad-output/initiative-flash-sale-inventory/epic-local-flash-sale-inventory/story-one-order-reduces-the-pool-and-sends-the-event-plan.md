@@ -3,7 +3,7 @@ title: 'One order reduces the pool and sends the event'
 type: 'feature'
 ticket: '1'
 created: '2026-09-29'
-status: 'built'
+status: done
 baseline_revision: 'b62ff7041176dedca80301445c3aca616e0153a9'
 route: 'full'
 route_source: 'auto'
