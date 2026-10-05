@@ -3,7 +3,7 @@ title: 'A blank user ID or quantity is not an order'
 type: 'feature'
 ticket: '6'
 created: '2026-10-05'
-status: 'built'
+status: done
 baseline_revision: '3951ee6ce778bb61b1140af9d2d6462485f5798b'
 route: 'full'
 route_source: 'auto'
