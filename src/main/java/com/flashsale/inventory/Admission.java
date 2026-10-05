@@ -17,6 +17,9 @@ public class Admission {
 	}
 
 	public Attempt admit(String userId, int units) {
+		if (userId.isEmpty() || units < 1) {
+			return new Attempt.Shopper(OrderOutcome.notAccepted());
+		}
 		if (orders.soldOutHint()) {
 			return new Attempt.Shopper(OrderOutcome.soldOut());
 		}

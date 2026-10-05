@@ -22,4 +22,8 @@ public record OrderOutcome(String message) {
 		return new OrderOutcome("The item has sold out");
 	}
 
+	public static OrderOutcome notAccepted() {
+		return new OrderOutcome("The order was not accepted");
+	}
+
 }

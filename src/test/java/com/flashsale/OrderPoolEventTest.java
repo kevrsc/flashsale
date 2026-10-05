@@ -79,6 +79,7 @@ class OrderPoolEventTest {
 			String body = order(userId, 1);
 
 			assertTrue(body.contains("The order is in process"));
+			assertFalse(body.contains("The order was not accepted"));
 			assertFalse(body.toLowerCase(Locale.ROOT).contains("sold out"));
 			assertFalse(body.contains("name=\"itemId\""));
 			assertFalse(body.contains("item-1"));
@@ -377,6 +378,73 @@ class OrderPoolEventTest {
 			assertEquals(1, customerRows());
 			assertNextAllowedAboutOneHourOut(userId);
 			assertOneEvent(consumer, userId, 1);
+		}
+	}
+
+	@Test
+	void emptyUserIdIsNotAcceptedAndDoesNotWaitOnTheItemLock() throws Exception {
+		int pool = quantity();
+		int outboxBefore = outboxRows();
+		ExecutorService poolExecutor = Executors.newSingleThreadExecutor();
+		try (Connection lock = dataSource.getConnection()) {
+			lock.setAutoCommit(false);
+			try (Statement statement = lock.createStatement()) {
+				statement.execute("SELECT quantity FROM item WHERE id = 'item-1' FOR UPDATE");
+			}
+			try {
+				Future<String> posted = poolExecutor.submit(() -> order("", 1));
+				String body = posted.get(2, TimeUnit.SECONDS);
+
+				assertTrue(body.contains("The order was not accepted"));
+				assertFalse(body.contains("The order is in process"));
+				assertEquals(pool, quantity());
+				assertEquals(0, customerRows());
+				assertEquals(outboxBefore, outboxRows());
+				assertFalse(orders.soldOutHint());
+			} finally {
+				lock.rollback();
+			}
+		} finally {
+			poolExecutor.shutdown();
+			if (!poolExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
+				poolExecutor.shutdownNow();
+			}
+		}
+	}
+
+	@Test
+	void quantityOfZeroIsNotAccepted() throws Exception {
+		int pool = quantity();
+		int outboxBefore = outboxRows();
+		String userId = "user-" + UUID.randomUUID();
+		try (KafkaConsumer<String, String> consumer = consumer()) {
+			seekToEnd(consumer);
+			String body = order(userId, 0);
+
+			assertTrue(body.contains("The order was not accepted"));
+			assertFalse(body.contains("The order is in process"));
+			assertEquals(pool, quantity());
+			assertEquals(0, customerRows());
+			assertFalse(orders.soldOutHint());
+			assertNothingPublished(consumer, userId, outboxBefore);
+		}
+	}
+
+	@Test
+	void negativeQuantityIsNotAccepted() throws Exception {
+		int pool = quantity();
+		int outboxBefore = outboxRows();
+		String userId = "user-" + UUID.randomUUID();
+		try (KafkaConsumer<String, String> consumer = consumer()) {
+			seekToEnd(consumer);
+			String body = order(userId, -1);
+
+			assertTrue(body.contains("The order was not accepted"));
+			assertFalse(body.contains("The order is in process"));
+			assertEquals(pool, quantity());
+			assertEquals(0, customerRows());
+			assertFalse(orders.soldOutHint());
+			assertNothingPublished(consumer, userId, outboxBefore);
 		}
 	}
 
