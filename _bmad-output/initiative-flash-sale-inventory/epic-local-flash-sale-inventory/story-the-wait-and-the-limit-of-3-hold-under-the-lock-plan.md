@@ -3,7 +3,7 @@ title: 'The wait and the limit of 3 hold under the lock'
 type: 'feature'
 ticket: '3'
 created: '2026-10-01'
-status: 'built'
+status: done
 baseline_revision: 'fb6282a2fc5c7f781a3a4a4e9a8759c34bc02f1a'
 route: 'full'
 route_source: 'auto'
