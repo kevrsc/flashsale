@@ -10,4 +10,12 @@ public record OrderOutcome(String message) {
 		return new OrderOutcome(null);
 	}
 
+	public static OrderOutcome waitOneHour() {
+		return new OrderOutcome("Wait one hour before ordering again");
+	}
+
+	public static OrderOutcome refused() {
+		return new OrderOutcome("The order is refused");
+	}
+
 }
