@@ -57,29 +57,47 @@ public class Orders {
 			markRollbackOnly();
 			return OrderOutcome.refused();
 		}
-		if (item.quantity() > 0 && (units > item.quantity() || units > unitsLeft)) {
-			markRollbackOnly();
-			return OrderOutcome.unmatched();
-		}
 
-		int updated = jdbc.update("""
-				UPDATE item
-				SET quantity = quantity - :units
-				WHERE id = :itemId AND quantity >= :units
-				""", Map.of("units", units, "itemId", item.id()));
-		if (updated == 0) {
-			markRollbackOnly();
-			return OrderOutcome.unmatched();
+		int quantity = item.quantity();
+		while (quantity > 0 && unitsLeft > 0) {
+			int deducted = Math.min(units, Math.min(quantity, unitsLeft));
+			if (deducted < 1) {
+				break;
+			}
+			int updated = jdbc.update("""
+					UPDATE item
+					SET quantity = quantity - :units
+					WHERE id = :itemId AND quantity >= :units
+					""", Map.of("units", deducted, "itemId", item.id()));
+			if (updated > 0) {
+				jdbc.update("""
+						UPDATE customer
+						SET units_ordered = units_ordered + :units,
+						    next_allowed = clock_timestamp() + interval '1 hour'
+						WHERE user_id = :userId
+						""", Map.of("units", deducted, "userId", userId));
+				String orderId = UUID.randomUUID().toString();
+				events.publishEvent(new OrderAccepted(orderId, userId, item.id(), deducted));
+				return OrderOutcome.inProcess();
+			}
+			int reread = lockedQuantity();
+			int again = Math.min(units, Math.min(Math.max(reread, 0), unitsLeft));
+			if (reread <= 0 || again < 1 || reread == quantity) {
+				quantity = reread;
+				break;
+			}
+			quantity = reread;
 		}
-		jdbc.update("""
-				UPDATE customer
-				SET units_ordered = units_ordered + :units,
-				    next_allowed = clock_timestamp() + interval '1 hour'
-				WHERE user_id = :userId
-				""", Map.of("units", units, "userId", userId));
-		String orderId = UUID.randomUUID().toString();
-		events.publishEvent(new OrderAccepted(orderId, userId, item.id(), units));
-		return OrderOutcome.inProcess();
+		markRollbackOnly();
+		return OrderOutcome.unmatched();
+	}
+
+	private int lockedQuantity() {
+		return Objects.requireNonNull(jdbc.queryForObject("""
+				SELECT quantity
+				FROM item
+				WHERE id = 'item-1'
+				""", Map.of(), Integer.class));
 	}
 
 	private static void markRollbackOnly() {

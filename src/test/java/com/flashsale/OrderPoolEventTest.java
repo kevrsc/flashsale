@@ -142,6 +142,7 @@ class OrderPoolEventTest {
 			assertFalse(body.contains("in process"));
 			assertFalse(body.contains("Wait one hour before ordering again"));
 			assertFalse(body.contains("The order is refused"));
+			assertFalse(body.toLowerCase(Locale.ROOT).contains("sold out"));
 			assertEquals(0, quantity());
 			assertEquals(0, customerRows());
 			assertEquals(outboxBefore, outboxRows());
@@ -260,22 +261,24 @@ class OrderPoolEventTest {
 	}
 
 	@Test
-	void requestLargerThanUnitsLeftDeductsNothing() throws Exception {
+	void shortQuantityKeepsThatQuantity() throws Exception {
+		jdbc.update("UPDATE item SET quantity = 2 WHERE id = 'item-1'");
 		String userId = "user-" + UUID.randomUUID();
-		int outboxBefore = outboxRows();
 		try (KafkaConsumer<String, String> consumer = consumer()) {
 			seekToEnd(consumer);
-			String body = order(userId, 4);
+			String body = order(userId, 3);
 
-			assertNoHoldWording(body);
-			assertEquals(10, quantity());
-			assertEquals(0, customerRows());
-			assertNothingPublished(consumer, userId, outboxBefore);
+			assertTrue(body.contains("The order is in process"));
+			assertEquals(0, quantity());
+			assertEquals(2, unitsOrdered(userId));
+			assertEquals(1, customerRows());
+			assertNextAllowedAboutOneHourOut(userId);
+			assertOneEvent(consumer, userId, 2);
 		}
 	}
 
 	@Test
-	void requestLargerThanUnitsLeftAfterASuccessDeductsNothing() throws Exception {
+	void shortLimitAfterTheHourKeepsTheUnitsLeft() throws Exception {
 		String userId = "user-" + UUID.randomUUID();
 		try (KafkaConsumer<String, String> consumer = consumer()) {
 			seekToEnd(consumer);
@@ -284,30 +287,35 @@ class OrderPoolEventTest {
 			assertOneEvent(consumer, userId, 2);
 			int pool = quantity();
 			elapseTheHour(userId);
-			int outboxBefore = outboxRows();
 			String body = order(userId, 2);
 
-			assertNoHoldWording(body);
-			assertEquals(pool, quantity());
-			assertEquals(2, unitsOrdered(userId));
+			assertTrue(body.contains("The order is in process"));
+			assertEquals(3, unitsOrdered(userId));
+			assertEquals(pool - 1, quantity());
 			assertEquals(1, customerRows());
-			assertNothingPublished(consumer, userId, outboxBefore);
+			assertNextAllowedAboutOneHourOut(userId);
+			assertOneEvent(consumer, userId, 1);
 		}
 	}
 
 	@Test
-	void requestLargerThanThePoolDeductsNothing() throws Exception {
-		jdbc.update("UPDATE item SET quantity = 2 WHERE id = 'item-1'");
+	void bothShortKeepsTheSmallerOfQuantityAndUnitsLeft() throws Exception {
 		String userId = "user-" + UUID.randomUUID();
-		int outboxBefore = outboxRows();
 		try (KafkaConsumer<String, String> consumer = consumer()) {
 			seekToEnd(consumer);
-			String body = order(userId, 3);
+			String first = order(userId, 2);
+			assertTrue(first.contains("The order is in process"));
+			assertOneEvent(consumer, userId, 2);
+			elapseTheHour(userId);
+			jdbc.update("UPDATE item SET quantity = 2 WHERE id = 'item-1'");
+			String body = order(userId, 4);
 
-			assertNoHoldWording(body);
-			assertEquals(2, quantity());
-			assertEquals(0, customerRows());
-			assertNothingPublished(consumer, userId, outboxBefore);
+			assertTrue(body.contains("The order is in process"));
+			assertEquals(1, quantity());
+			assertEquals(3, unitsOrdered(userId));
+			assertEquals(1, customerRows());
+			assertNextAllowedAboutOneHourOut(userId);
+			assertOneEvent(consumer, userId, 1);
 		}
 	}
 
@@ -327,12 +335,6 @@ class OrderPoolEventTest {
 		jdbc.update(
 				"UPDATE customer SET next_allowed = clock_timestamp() - interval '1 second' WHERE user_id = ?",
 				userId);
-	}
-
-	private void assertNoHoldWording(String body) {
-		assertFalse(body.contains("The order is in process"));
-		assertFalse(body.contains("Wait one hour before ordering again"));
-		assertFalse(body.contains("The order is refused"));
 	}
 
 	private void assertOneEvent(KafkaConsumer<String, String> consumer, String userId, int unitsDeducted) {
