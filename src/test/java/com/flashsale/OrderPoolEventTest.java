@@ -34,6 +34,7 @@ import org.junit.jupiter.api.Test;
 
 import com.flashsale.inventory.Admission;
 import com.flashsale.inventory.Attempt;
+import com.flashsale.inventory.Orders;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.json.JsonParserFactory;
@@ -60,9 +61,13 @@ class OrderPoolEventTest {
 	@Autowired
 	private Admission admission;
 
+	@Autowired
+	private Orders orders;
+
 	@BeforeEach
 	void resetQuantity() {
 		jdbc.update("UPDATE item SET quantity = 10 WHERE id = 'item-1'");
+		orders.clearSoldOutHint();
 		jdbc.update("DELETE FROM customer");
 	}
 
@@ -74,6 +79,7 @@ class OrderPoolEventTest {
 			String body = order(userId, 1);
 
 			assertTrue(body.contains("The order is in process"));
+			assertFalse(body.toLowerCase(Locale.ROOT).contains("sold out"));
 			assertFalse(body.contains("name=\"itemId\""));
 			assertFalse(body.contains("item-1"));
 			assertEquals(9, quantity());
@@ -139,15 +145,70 @@ class OrderPoolEventTest {
 			seekToEnd(consumer);
 			String body = order(userId, 1);
 
+			assertTrue(body.contains("The item has sold out"));
 			assertFalse(body.contains("in process"));
 			assertFalse(body.contains("Wait one hour before ordering again"));
 			assertFalse(body.contains("The order is refused"));
-			assertFalse(body.toLowerCase(Locale.ROOT).contains("sold out"));
 			assertEquals(0, quantity());
 			assertEquals(0, customerRows());
 			assertEquals(outboxBefore, outboxRows());
 
 			assertNothingPublished(consumer, userId, outboxBefore);
+		}
+	}
+
+	@Test
+	void emptyQuantityDuringTheWaitSaysSoldOut() throws Exception {
+		String userId = "user-" + UUID.randomUUID();
+		try (KafkaConsumer<String, String> consumer = consumer()) {
+			seekToEnd(consumer);
+			String first = order(userId, 1);
+			assertTrue(first.contains("The order is in process"));
+			assertOneEvent(consumer, userId, 1);
+			String deadline = nextAllowedText(userId);
+			int units = unitsOrdered(userId);
+			jdbc.update("UPDATE item SET quantity = 0 WHERE id = 'item-1'");
+			int outboxBefore = outboxRows();
+			String body = order(userId, 1);
+
+			assertTrue(body.contains("The item has sold out"));
+			assertFalse(body.contains("Wait one hour before ordering again"));
+			assertEquals(0, quantity());
+			assertEquals(units, unitsOrdered(userId));
+			assertEquals(deadline, nextAllowedText(userId));
+			assertEquals(1, customerRows());
+			assertNothingPublished(consumer, userId, outboxBefore);
+		}
+	}
+
+	@Test
+	void laterAttemptAnswersFromTheHintWithoutTheItemLock() throws Exception {
+		jdbc.update("UPDATE item SET quantity = 0 WHERE id = 'item-1'");
+		String first = order("user-" + UUID.randomUUID(), 1);
+		assertTrue(first.contains("The item has sold out"));
+		int outboxBefore = outboxRows();
+
+		ExecutorService pool = Executors.newSingleThreadExecutor();
+		try (Connection lock = dataSource.getConnection()) {
+			lock.setAutoCommit(false);
+			try (Statement statement = lock.createStatement()) {
+				statement.execute("SELECT quantity FROM item WHERE id = 'item-1' FOR UPDATE");
+			}
+			try {
+				Future<String> hinted = pool.submit(() -> order("user-" + UUID.randomUUID(), 1));
+				String body = hinted.get(2, TimeUnit.SECONDS);
+				assertTrue(body.contains("The item has sold out"));
+				assertEquals(0, quantity());
+				assertEquals(0, customerRows());
+				assertEquals(outboxBefore, outboxRows());
+			} finally {
+				lock.rollback();
+			}
+		} finally {
+			pool.shutdown();
+			if (!pool.awaitTermination(30, TimeUnit.SECONDS)) {
+				pool.shutdownNow();
+			}
 		}
 	}
 

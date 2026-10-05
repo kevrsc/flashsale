@@ -17,10 +17,16 @@ public class Admission {
 	}
 
 	public Attempt admit(String userId, int units) {
+		if (orders.soldOutHint()) {
+			return new Attempt.Shopper(OrderOutcome.soldOut());
+		}
 		if (!permits.tryAcquire()) {
 			return new Attempt.TurnedAway();
 		}
 		try {
+			if (orders.soldOutHint()) {
+				return new Attempt.Shopper(OrderOutcome.soldOut());
+			}
 			return new Attempt.Shopper(orders.place(userId, units));
 		} finally {
 			permits.release();

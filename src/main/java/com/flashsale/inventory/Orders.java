@@ -3,6 +3,7 @@ package com.flashsale.inventory;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -14,6 +15,8 @@ import org.springframework.transaction.interceptor.TransactionAspectSupport;
 public class Orders {
 
 	private static final int CUSTOMER_LIMIT = 3;
+
+	private final AtomicBoolean soldOutHint = new AtomicBoolean();
 
 	private final NamedParameterJdbcTemplate jdbc;
 	private final ApplicationEventPublisher events;
@@ -48,6 +51,9 @@ public class Orders {
 				FOR UPDATE
 				""", Map.of(), (rs, row) -> new ItemHold(rs.getString("id"), rs.getInt("quantity"))));
 
+		if (item.quantity() <= 0) {
+			return soldOut();
+		}
 		if (item.quantity() > 0 && customer.waiting()) {
 			markRollbackOnly();
 			return OrderOutcome.waitOneHour();
@@ -81,15 +87,32 @@ public class Orders {
 				return OrderOutcome.inProcess();
 			}
 			int reread = lockedQuantity();
-			int again = Math.min(units, Math.min(Math.max(reread, 0), unitsLeft));
-			if (reread <= 0 || again < 1 || reread == quantity) {
-				quantity = reread;
+			if (reread <= 0) {
+				return soldOut();
+			}
+			int again = Math.min(units, Math.min(reread, unitsLeft));
+			if (again < 1 || reread == quantity) {
 				break;
 			}
 			quantity = reread;
 		}
 		markRollbackOnly();
 		return OrderOutcome.unmatched();
+	}
+
+	public boolean soldOutHint() {
+		return soldOutHint.get();
+	}
+
+	// Tests clear this after restoring a quantity above zero. The product does not.
+	public void clearSoldOutHint() {
+		soldOutHint.set(false);
+	}
+
+	private OrderOutcome soldOut() {
+		soldOutHint.set(true);
+		markRollbackOnly();
+		return OrderOutcome.soldOut();
 	}
 
 	private int lockedQuantity() {

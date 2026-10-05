@@ -18,4 +18,8 @@ public record OrderOutcome(String message) {
 		return new OrderOutcome("The order is refused");
 	}
 
+	public static OrderOutcome soldOut() {
+		return new OrderOutcome("The item has sold out");
+	}
+
 }
