@@ -579,6 +579,76 @@ class OrderPoolEventTest {
 		}
 	}
 
+	@Test
+	void theSaleChecksRunEndToEnd() throws Exception {
+		String alex = "user-" + UUID.randomUUID();
+		String second = "user-" + UUID.randomUUID();
+		String shortPool = "user-" + UUID.randomUUID();
+		Totals before = latestTotals();
+		try (KafkaConsumer<String, String> consumer = consumer()) {
+			seekToEnd(consumer);
+
+			String first = order(alex, 1);
+			assertTrue(first.contains("The order is in process"));
+			assertEquals(9, quantity());
+			assertOneEvent(consumer, alex, 1);
+
+			int outboxBeforeWait = outboxRows();
+			String waiting = order(alex, 1);
+			assertTrue(waiting.contains("Wait one hour before ordering again"));
+			assertEquals(9, quantity());
+			assertNothingPublished(consumer, alex, outboxBeforeWait);
+
+			elapseTheHour(alex);
+			String capped = order(alex, 5);
+			assertTrue(capped.contains("The order is in process"));
+			assertEquals(3, unitsOrdered(alex));
+			assertEquals(7, quantity());
+			assertOneEvent(consumer, alex, 2);
+
+			elapseTheHour(alex);
+			int poolAtLimit = quantity();
+			int outboxBeforeRefusal = outboxRows();
+			String refused = order(alex, 1);
+			assertTrue(refused.contains("The order is refused"));
+			assertEquals(poolAtLimit, quantity());
+			assertEquals(3, unitsOrdered(alex));
+			assertNothingPublished(consumer, alex, outboxBeforeRefusal);
+
+			String met = order(second, 3);
+			assertTrue(met.contains("The order is in process"));
+			assertEquals(3, unitsOrdered(second));
+			assertEquals(4, quantity());
+			assertOneEvent(consumer, second, 3);
+
+			jdbc.update("UPDATE item SET quantity = 1 WHERE id = 'item-1'");
+			String subset = order(shortPool, 3);
+			assertTrue(subset.contains("The order is in process"));
+			assertEquals(0, quantity());
+			assertEquals(1, unitsOrdered(shortPool));
+			assertOneEvent(consumer, shortPool, 1);
+
+			int outboxBeforeSoldOut = outboxRows();
+			String soldOut = order(shortPool, 1);
+			assertTrue(soldOut.contains("The item has sold out"));
+			assertFalse(soldOut.contains("Wait one hour before ordering again"));
+			assertEquals(0, quantity());
+			assertEquals(1, unitsOrdered(shortPool));
+			assertNothingPublished(consumer, shortPool, outboxBeforeSoldOut);
+
+			int quantityBeforeBlank = quantity();
+			int outboxBeforeBlank = outboxRows();
+			String blank = order("", 1);
+			assertTrue(blank.contains("The order was not accepted"));
+			assertEquals(quantityBeforeBlank, quantity());
+			assertNothingPublished(consumer, "\"userId\":\"\"", outboxBeforeBlank);
+
+			Totals after = latestTotals();
+			assertTrue(after.requests() > before.requests(), after + " from " + before);
+			assertEquals(0, count("SELECT count(*) FROM customer WHERE units_ordered > 3"));
+		}
+	}
+
 	private String postOrder() throws Exception {
 		return order("user-" + UUID.randomUUID(), 1);
 	}
