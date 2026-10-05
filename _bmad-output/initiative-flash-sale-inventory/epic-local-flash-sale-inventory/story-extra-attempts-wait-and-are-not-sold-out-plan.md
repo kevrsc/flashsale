@@ -3,7 +3,7 @@ title: 'Extra attempts wait and are not sold out'
 type: 'feature'
 ticket: '2'
 created: '2026-10-01'
-status: 'built'
+status: done
 baseline_revision: '9836dca46b7b3a966f21e41be951efbae63dcb14'
 route: 'full'
 route_source: 'auto'
