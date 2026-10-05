@@ -3,7 +3,7 @@ title: 'The sale checks run end to end'
 type: 'feature'
 ticket: '9'
 created: '2026-10-05'
-status: 'built'
+status: done
 baseline_revision: '0bc7bc42f4f260a63baaef7cc5dbca3421d33028'
 route: 'full'
 route_source: 'auto'

@@ -3,7 +3,7 @@ title: 'The log shows request and database totals'
 type: 'feature'
 ticket: '7'
 created: '2026-10-05'
-status: 'built'
+status: done
 baseline_revision: '675d9458fefb956a82ceae542bf54055d8d5f534'
 route: 'full'
 route_source: 'auto'
