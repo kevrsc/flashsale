@@ -3,7 +3,7 @@ title: 'An empty pool is sold out, even during the wait'
 type: 'feature'
 ticket: '5'
 created: '2026-10-05'
-status: 'built'
+status: done
 baseline_revision: '2cae00ac8e8e00450e350ddd5f9c29e194c475ed'
 route: 'full'
 route_source: 'auto'
