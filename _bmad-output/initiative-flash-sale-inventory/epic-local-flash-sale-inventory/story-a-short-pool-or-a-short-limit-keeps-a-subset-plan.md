@@ -3,7 +3,7 @@ title: 'A short pool or a short limit keeps a subset'
 type: 'feature'
 ticket: '4'
 created: '2026-10-05'
-status: 'built'
+status: done
 baseline_revision: '064760e4da3dae872642d89590c902e5721b509d'
 route: 'full'
 route_source: 'auto'
