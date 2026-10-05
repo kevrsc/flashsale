@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -17,6 +18,8 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -48,6 +51,8 @@ import org.springframework.test.web.servlet.MockMvc;
 class OrderPoolEventTest {
 
 	private static final String TOPIC = "inventory.order-accepted";
+
+	private static final Pattern TOTALS = Pattern.compile("requests=(\\d+) queries=(\\d+) updates=(\\d+)");
 
 	@Autowired
 	private MockMvc mockMvc;
@@ -431,6 +436,132 @@ class OrderPoolEventTest {
 	}
 
 	@Test
+	void successLogsTheTotalsAndIncludesPublisherStatements() throws Exception {
+		String userId = "user-" + UUID.randomUUID();
+		int mark = TotalsLogCapture.LINES.size();
+		Totals before = latestTotals();
+		try (KafkaConsumer<String, String> consumer = consumer()) {
+			seekToEnd(consumer);
+			String body = order(userId, 1);
+
+			assertTrue(body.contains("The order is in process"));
+			Totals request = requestTotals(mark, before.requests() + 1);
+			assertTrue(request.queries() > before.queries(), request + " from " + before);
+			assertTrue(request.updates() > before.updates(), request + " from " + before);
+
+			assertOneEvent(consumer, userId, 1);
+			Totals published = awaitPublisherBeyond(request);
+			assertTrue(published.queries() > request.queries() || published.updates() > request.updates(),
+					published + " from " + request);
+		}
+	}
+
+	@Test
+	void waitLogsRequestAndDatabaseTotals() throws Exception {
+		String userId = "user-" + UUID.randomUUID();
+		String first = order(userId, 1);
+		assertTrue(first.contains("The order is in process"));
+		int mark = TotalsLogCapture.LINES.size();
+		Totals before = latestTotals();
+		String body = order(userId, 1);
+
+		assertTrue(body.contains("Wait one hour before ordering again"));
+		assertDatabaseTotalsRose(mark, before);
+	}
+
+	@Test
+	void refusalLogsRequestAndDatabaseTotals() throws Exception {
+		String userId = "user-" + UUID.randomUUID();
+		String first = order(userId, 3);
+		assertTrue(first.contains("The order is in process"));
+		elapseTheHour(userId);
+		int mark = TotalsLogCapture.LINES.size();
+		Totals before = latestTotals();
+		String body = order(userId, 1);
+
+		assertTrue(body.contains("The order is refused"));
+		assertDatabaseTotalsRose(mark, before);
+	}
+
+	@Test
+	void soldOutFromTheLockedReadLogsRequestAndDatabaseTotals() throws Exception {
+		jdbc.update("UPDATE item SET quantity = 0 WHERE id = 'item-1'");
+		int mark = TotalsLogCapture.LINES.size();
+		Totals before = latestTotals();
+		String body = order("user-" + UUID.randomUUID(), 1);
+
+		assertTrue(body.contains("The item has sold out"));
+		assertDatabaseTotalsRose(mark, before);
+	}
+
+	@Test
+	void soldOutFromTheHintLogsARequestWithoutDatabaseTotals() throws Exception {
+		jdbc.update("UPDATE item SET quantity = 0 WHERE id = 'item-1'");
+		String first = order("user-" + UUID.randomUUID(), 1);
+		assertTrue(first.contains("The item has sold out"));
+		int mark = TotalsLogCapture.LINES.size();
+		Totals before = latestTotals();
+		String body = order("user-" + UUID.randomUUID(), 1);
+
+		assertTrue(body.contains("The item has sold out"));
+		assertRequestWithoutDatabase(mark, before.requests() + 1);
+	}
+
+	@Test
+	void notAcceptedLogsARequestWithoutDatabaseTotals() throws Exception {
+		int mark = TotalsLogCapture.LINES.size();
+		Totals before = latestTotals();
+		String blank = order("", 1);
+		assertTrue(blank.contains("The order was not accepted"));
+		assertRequestWithoutDatabase(mark, before.requests() + 1);
+
+		int again = TotalsLogCapture.LINES.size();
+		Totals afterBlank = latestTotals();
+		String zero = order("user-" + UUID.randomUUID(), 0);
+		assertTrue(zero.contains("The order was not accepted"));
+		assertRequestWithoutDatabase(again, afterBlank.requests() + 1);
+	}
+
+	@Test
+	void turnAwayLogsARequestWithoutDatabaseTotals() throws Exception {
+		ExecutorService pool = Executors.newFixedThreadPool(2);
+		try (Connection lock = dataSource.getConnection()) {
+			lock.setAutoCommit(false);
+			try (Statement statement = lock.createStatement()) {
+				statement.execute("SELECT quantity FROM item WHERE id = 'item-1' FOR UPDATE");
+			}
+			try {
+				Future<String> holderOne = pool.submit(this::postOrder);
+				Future<String> holderTwo = pool.submit(this::postOrder);
+				awaitItemUpdates(2);
+				int mark = TotalsLogCapture.LINES.size();
+				Totals before = latestTotals();
+				assertInstanceOf(Attempt.TurnedAway.class, admission.admit("probe-" + UUID.randomUUID(), 1));
+				assertInstanceOf(Attempt.TurnedAway.class, admission.admit("probe-" + UUID.randomUUID(), 1));
+				requestTotals(mark, before.requests() + 1);
+				assertRequestWithoutDatabase(mark, before.requests() + 2);
+				lock.rollback();
+				assertTrue(holderOne.get(20, TimeUnit.SECONDS).contains("The order is in process"));
+				assertTrue(holderTwo.get(20, TimeUnit.SECONDS).contains("The order is in process"));
+			} finally {
+				lock.rollback();
+			}
+		} finally {
+			pool.shutdown();
+			if (!pool.awaitTermination(30, TimeUnit.SECONDS)) {
+				pool.shutdownNow();
+			}
+		}
+	}
+
+	@Test
+	void openingThePageLeavesTheRequestTotalUnchanged() throws Exception {
+		long requests = latestTotals().requests();
+		mockMvc.perform(get("/")).andExpect(status().isOk());
+		assertEquals(requests, latestTotals().requests());
+	}
+
+	@Test
 	void negativeQuantityIsNotAccepted() throws Exception {
 		int pool = quantity();
 		int outboxBefore = outboxRows();
@@ -604,6 +735,94 @@ class OrderPoolEventTest {
 			}
 		}
 		return found;
+	}
+
+	private void assertDatabaseTotalsRose(int mark, Totals before) throws InterruptedException {
+		Totals request = requestTotals(mark, before.requests() + 1);
+		assertTrue(request.queries() > before.queries(), request + " from " + before);
+		assertTrue(request.updates() > before.updates(), request + " from " + before);
+	}
+
+	private void assertRequestWithoutDatabase(int mark, long requests) throws InterruptedException {
+		int index = indexOfRequest(mark, requests);
+		Totals request = parseTotals(TotalsLogCapture.LINES.get(index));
+		Totals previous = precedingTotals(index);
+		assertEquals(previous.queries(), request.queries(), request + " from " + previous);
+		assertEquals(previous.updates(), request.updates(), request + " from " + previous);
+		assertEquals(previous.requests() + 1, request.requests());
+	}
+
+	private Totals awaitPublisherBeyond(Totals request) throws InterruptedException {
+		long deadline = System.nanoTime() + Duration.ofSeconds(8).toNanos();
+		Totals latest = latestTotals();
+		while (System.nanoTime() < deadline) {
+			latest = latestTotals();
+			if (latest.queries() > request.queries() || latest.updates() > request.updates()) {
+				return latest;
+			}
+			Thread.sleep(50);
+		}
+		return latest;
+	}
+
+	private Totals requestTotals(int mark, long requests) throws InterruptedException {
+		return parseTotals(TotalsLogCapture.LINES.get(indexOfRequest(mark, requests)));
+	}
+
+	private int indexOfRequest(int mark, long requests) throws InterruptedException {
+		long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+		while (true) {
+			List<String> lines = TotalsLogCapture.LINES;
+			for (int i = mark; i < lines.size(); i++) {
+				Totals parsed = parseTotals(lines.get(i));
+				if (parsed != null && parsed.requests() == requests) {
+					return i;
+				}
+			}
+			if (System.nanoTime() >= deadline) {
+				throw new AssertionError("no totals line for requests=" + requests + " after " + tail(lines));
+			}
+			Thread.sleep(20);
+		}
+	}
+
+	private static Totals precedingTotals(int index) {
+		List<String> lines = TotalsLogCapture.LINES;
+		for (int i = index - 1; i >= 0; i--) {
+			Totals parsed = parseTotals(lines.get(i));
+			if (parsed != null) {
+				return parsed;
+			}
+		}
+		return new Totals(0, 0, 0);
+	}
+
+	private static Totals latestTotals() {
+		List<String> lines = TotalsLogCapture.LINES;
+		for (int i = lines.size() - 1; i >= 0; i--) {
+			Totals parsed = parseTotals(lines.get(i));
+			if (parsed != null) {
+				return parsed;
+			}
+		}
+		return new Totals(0, 0, 0);
+	}
+
+	private static Totals parseTotals(String line) {
+		Matcher matcher = TOTALS.matcher(line);
+		if (!matcher.matches()) {
+			return null;
+		}
+		return new Totals(Long.parseLong(matcher.group(1)), Long.parseLong(matcher.group(2)),
+				Long.parseLong(matcher.group(3)));
+	}
+
+	private static String tail(List<String> lines) {
+		int from = Math.max(0, lines.size() - 12);
+		return lines.subList(from, lines.size()).toString();
+	}
+
+	private record Totals(long requests, long queries, long updates) {
 	}
 
 }
