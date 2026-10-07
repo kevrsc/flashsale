@@ -1,13 +1,34 @@
 <!DOCTYPE html>
 <html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Flash sale</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&amp;family=Instrument+Serif&amp;display=swap">
+    <link rel="stylesheet" href="/order.css">
+</head>
 <body>
-<form method="post" action="/">
-    <label for="userId">User ID</label>
-    <input id="userId" name="userId" type="text" required>
-    <label for="quantity">Quantity</label>
-    <input id="quantity" name="quantity" type="number" required>
-    <button type="submit">Order</button>
-</form>
-<p th:if="${outcome != null}" th:text="${outcome}"></p>
+<main class="desk">
+    <header class="intro">
+        <p class="kicker">Flash sale</p>
+        <h1>Take what's left.</h1>
+        <ul class="facts">
+            <li>10 at the open</li>
+            <li>3 per person</li>
+            <li>1 hour between orders</li>
+        </ul>
+    </header>
+    <form class="ticket" method="post" action="/">
+        <label for="userId">User id</label>
+        <input id="userId" name="userId" type="text" required th:value="${userId}">
+        <label for="quantity">Quantity</label>
+        <input id="quantity" name="quantity" type="number" min="1" required th:value="${quantity}">
+        <button type="submit">Place order</button>
+        <p th:if="${outcome != null}" id="outcome" class="outcome" role="status"
+           th:attr="data-tone=${tone}" th:text="${outcome}"></p>
+    </form>
+</main>
 </body>
 </html>

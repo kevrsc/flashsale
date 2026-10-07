@@ -28,8 +28,25 @@ public class OrderPage {
 
 	@PostMapping("/")
 	public String order(@RequestParam String userId, @RequestParam int quantity, Model model) {
-		model.addAttribute("outcome", shopperOutcome(userId, quantity).message());
+		String message = shopperOutcome(userId, quantity).message();
+		model.addAttribute("userId", userId);
+		model.addAttribute("quantity", quantity);
+		model.addAttribute("outcome", message);
+		model.addAttribute("tone", tone(message));
 		return "order";
+	}
+
+	private static String tone(String message) {
+		if (message == null) {
+			return "bad";
+		}
+		return switch (message) {
+			case "The order is in process" -> "go";
+			case "Wait one hour before ordering again" -> "wait";
+			case "The order is refused" -> "stop";
+			case "The item has sold out" -> "empty";
+			default -> "bad";
+		};
 	}
 
 	private OrderOutcome shopperOutcome(String userId, int quantity) {

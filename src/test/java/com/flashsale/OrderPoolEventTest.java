@@ -557,8 +557,20 @@ class OrderPoolEventTest {
 	@Test
 	void openingThePageLeavesTheRequestTotalUnchanged() throws Exception {
 		long requests = latestTotals().requests();
-		mockMvc.perform(get("/")).andExpect(status().isOk());
+		String body = mockMvc.perform(get("/")).andExpect(status().isOk()).andReturn().getResponse()
+				.getContentAsString();
 		assertEquals(requests, latestTotals().requests());
+		assertTrue(body.contains("method=\"post\""));
+		assertTrue(body.contains("action=\"/\""));
+		assertTrue(body.contains("name=\"userId\""));
+		assertTrue(body.contains("name=\"quantity\""));
+		assertFalse(body.contains("The order is in process"));
+		assertFalse(body.contains("Wait one hour before ordering again"));
+		assertFalse(body.contains("The item has sold out"));
+		assertFalse(body.contains("The order is refused"));
+		assertFalse(body.contains("The order was not accepted"));
+		assertFalse(body.contains("name=\"itemId\""));
+		assertFalse(body.contains("item-1"));
 	}
 
 	@Test
