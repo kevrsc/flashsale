@@ -24,6 +24,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.sql.DataSource;
 
@@ -44,6 +45,7 @@ import org.springframework.boot.json.JsonParserFactory;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.util.AopTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 
 @SpringBootTest
@@ -207,6 +209,44 @@ class OrderPoolEventTest {
 				assertEquals(0, quantity());
 				assertEquals(0, customerRows());
 				assertEquals(outboxBefore, outboxRows());
+			} finally {
+				lock.rollback();
+			}
+		} finally {
+			pool.shutdown();
+			if (!pool.awaitTermination(30, TimeUnit.SECONDS)) {
+				pool.shutdownNow();
+			}
+		}
+	}
+
+	@Test
+	void soldOutHintAnswersFromThePageWhileTheBoundIsFull() throws Exception {
+		ExecutorService pool = Executors.newFixedThreadPool(3);
+		try (Connection lock = dataSource.getConnection()) {
+			lock.setAutoCommit(false);
+			try (Statement statement = lock.createStatement()) {
+				statement.execute("SELECT quantity FROM item WHERE id = 'item-1' FOR UPDATE");
+			}
+			try {
+				Future<String> holderOne = pool.submit(this::postOrder);
+				Future<String> holderTwo = pool.submit(this::postOrder);
+				awaitItemUpdates(2);
+				// Admit will not take a permit once the hint is set, so the bound is filled first.
+				setSoldOutHint();
+
+				Future<String> hinted = pool.submit(() -> order("user-" + UUID.randomUUID(), 1));
+				String body = hinted.get(2, TimeUnit.SECONDS);
+				assertTrue(body.contains("The item has sold out"));
+				assertFalse(body.contains("Wait one hour before ordering again"));
+				assertEquals(2, itemUpdatesInFlight(), activeQueries());
+
+				lock.rollback();
+				assertTrue(holderOne.get(20, TimeUnit.SECONDS).contains("The order is in process"));
+				assertTrue(holderTwo.get(20, TimeUnit.SECONDS).contains("The order is in process"));
+				assertEquals(8, quantity());
+				assertEquals(2, customerRows());
+				assertTrue(orders.soldOutHint());
 			} finally {
 				lock.rollback();
 			}
@@ -600,10 +640,13 @@ class OrderPoolEventTest {
 		try (KafkaConsumer<String, String> consumer = consumer()) {
 			seekToEnd(consumer);
 
+			int firstMark = TotalsLogCapture.LINES.size();
+			Totals beforeFirst = latestTotals();
 			String first = order(alex, 1);
 			assertTrue(first.contains("The order is in process"));
 			assertEquals(9, quantity());
 			assertOneEvent(consumer, alex, 1);
+			assertDatabaseTotalsRose(firstMark, beforeFirst);
 
 			int outboxBeforeWait = outboxRows();
 			String waiting = order(alex, 1);
@@ -648,17 +691,27 @@ class OrderPoolEventTest {
 			assertEquals(1, unitsOrdered(shortPool));
 			assertNothingPublished(consumer, shortPool, outboxBeforeSoldOut);
 
+			int blankMark = TotalsLogCapture.LINES.size();
+			Totals beforeBlank = latestTotals();
 			int quantityBeforeBlank = quantity();
 			int outboxBeforeBlank = outboxRows();
 			String blank = order("", 1);
 			assertTrue(blank.contains("The order was not accepted"));
 			assertEquals(quantityBeforeBlank, quantity());
 			assertNothingPublished(consumer, "\"userId\":\"\"", outboxBeforeBlank);
+			assertRequestWithoutDatabase(blankMark, beforeBlank.requests() + 1);
 
 			Totals after = latestTotals();
 			assertTrue(after.requests() > before.requests(), after + " from " + before);
 			assertEquals(0, count("SELECT count(*) FROM customer WHERE units_ordered > 3"));
 		}
+	}
+
+	private void setSoldOutHint() throws Exception {
+		Orders target = AopTestUtils.getUltimateTargetObject(orders);
+		var field = Orders.class.getDeclaredField("soldOutHint");
+		field.setAccessible(true);
+		((AtomicBoolean) field.get(target)).set(true);
 	}
 
 	private String postOrder() throws Exception {
