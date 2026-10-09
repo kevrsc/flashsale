@@ -50,3 +50,11 @@ services:
         done
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic inventory.order-accepted --replication-factor 1 --partitions 1
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --describe --topic inventory.order-accepted
+
+  otel-collector:
+    image: otel/opentelemetry-collector:0.162.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol/config.yaml
+    ports:
+      - "4318:4318"
