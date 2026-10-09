@@ -31,8 +31,13 @@ The builder demonstrates the spec's success signal on the local service: orders 
 
 This service only: the landing page and the inventory decision in one application. Not payment, fulfillment, accounts, a second item, a hosted environment, or restock. See the spec's non-goals. Tracer path: one typed user ID orders one unit and sees the order is in process, and the JSON order event is on the topic.
 
-- Touch point: order service — consumes `inventory.order-accepted` and is not built here; owner: epic-local-flash-sale-inventory
+- Touch point: order service — consumes `inventory.order-accepted` and is not built here; the event body is epic-local-flash-sale-inventory; trace headers on that record are epic-local-sale-telemetry
 - Touch point: account — the page collects a user ID and this service does not create the account; owner: epic-local-flash-sale-inventory
+- Touch point: hosted log aggregators — Loki, OpenSearch, or Elastic may link a log line using trace id and span id; not deployed here; owner: epic-local-sale-telemetry
+
+## Additional scope
+
+CAP-1 through CAP-8 stay the spec's capabilities. On 2026-10-09 the user added local telemetry for this service. That scope is not in the spec. The epic Local sale telemetry owns it. The ids TEL-1 through TEL-6 live in that epic.
 
 ## References
 
@@ -44,3 +49,4 @@ This service only: the landing page and the inventory decision in one applicatio
 
 - Decision: one epic, Local flash-sale inventory, owns CAP-1 through CAP-8. The platform baseline is that epic's first stories, not a separate epic (user, 2026-09-29).
 - Decision: the order service and accounts are touch points with no epic (user, 2026-09-29).
+- Decision: the 2026-09-29 limit of one epic is replaced. Local flash-sale inventory still owns CAP-1 through CAP-8 and remains the platform baseline. Local sale telemetry is a second epic for local metrics, traces, logs, and Kafka trace headers. It does not own CAP-1 through CAP-8 (user, 2026-10-09).

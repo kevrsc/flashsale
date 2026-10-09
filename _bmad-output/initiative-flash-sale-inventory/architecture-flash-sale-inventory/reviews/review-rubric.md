@@ -2,150 +2,93 @@
 
 Verdict: **Revise**
 
-The spine was not edited. This is a good-spine checklist review of the draft initiative spine against its memlog.
+The spine was not edited. This is a good-spine checklist review of the updated initiative spine. The update amends AD-5, AD-8, and AD-10 and adds AD-11. CAP-1 through CAP-8 are unchanged, and the sale totals log is still the tally.
 
-- Spine: `architecture-flash-sale-inventory/architecture-flash-sale-inventory.md` (draft, altitude initiative)
-- Memlog (authority for what was decided): `architecture-flash-sale-inventory/.memlog.md`
-- Driving PRD: `prd-flash-sale-inventory/prd-flash-sale-inventory.md` (final), plus the user-stated mechanism in `addendum.md` where the PRD points at it
+- Spine: `architecture-flash-sale-inventory/architecture-flash-sale-inventory.md` (final, altitude initiative, updated 2026-10-09)
+- Memlog: `architecture-flash-sale-inventory/.memlog.md`
+- Driving spec: `spec-flash-sale-inventory/spec-flash-sale-inventory.md` (CAP-1 through CAP-8)
+- Telemetry scope: `epic-local-sale-telemetry/epic-local-sale-telemetry.md` (TEL-1 through TEL-6)
+- Brownfield: the running service (`build.gradle`, `compose.yaml`, `application.properties`, `inventory` and `page`)
+- Lint: `lint_spine.py` reported `ok: true`, no mechanical findings
 
-The transactional outbox, the page→inventory direction, the same-transaction deduction, the schema split, and the single local topology are real contracts. Handoff waits on the critical and high items below. They are tightenings of rules the spine already aims at.
+The order JSON, the sale log, the single host process, and the three new Compose services are real contracts. Handoff waits on the high item: AD-5 requires the after-commit send to stay in the order's trace, and the only mechanism it allows does not do that on this outbox path.
 
 ## Checklist
 
 | Check | Result |
 | --- | --- |
-| Fixes the real divergence points one level down (page module vs inventory module, and this service vs the separate order service), and misses none | **Gap.** Module direction, who deducts, who publishes, who counts, and the topic payload are fixed. Overflow behavior, the shopper-outcome set, wait/limit as guards, and order-service delivery/idempotency are open. |
-| Every AD Rule is enforceable and actually prevents its stated divergence | **Gap.** AD-2, AD-5's field list, AD-8, AD-9, and AD-10 hold. AD-3's customer-limit prevent, AD-4's "second stock count," AD-6's one-row rule, and AD-7's "no browser JSON API" are stronger than the rules that follow them. |
-| Nothing under Deferred could let two units diverge | **Pass.** See the deferred sweep. |
-| Named tech is verified-current, using memlog `(version)` entries as the research record | **Gap.** Boot, Modulith, Java, and PostgreSQL are supported. Two stack pins are not. |
-| Brownfield: ratify, do not contradict the codebase | **Pass.** Greenfield. No application code exists to contradict. |
-| Covers the driving PRD capabilities listed in `binds` | **Gap on side effects.** FR-1–FR-6, SM-1, and SM-2 each have a map row. FR-3 and FR-4 are stored and ordered as messages, and their no-deduction side effects are not bound. |
-| Parent spine inherited without a local AD weakening it | **Pass.** No parent spine. Nothing is inherited as an AD. |
-| Every dimension this altitude owns is decided, deferred, or an open question | **Gap.** Deployment and infra are decided. Operations is silent. |
+| Fixes the real divergence points one level down and misses none | **Gap.** Module boundaries, the order payload, the sale log beside metrics, and the local collector topology are fixed. The request trace does not survive the outbox send under the rule as written. Export sampling and a down collector are still open. |
+| Every AD Rule is enforceable and actually prevents its stated divergence | **Gap.** AD-8 and AD-10 hold. AD-5's same-trace prevent does not. AD-11's destinations are right; the Prevent line and the Boot switches that turn export on are not. |
+| Nothing under Deferred could let two units diverge | **Pass.** Each item leaves the behavior fixed and names when to revisit. |
+| Named tech is verified-current | **Pass.** Checked 2026-10-09 against the current releases, not only the memlog. |
+| Brownfield: ratify, do not contradict the codebase | **Pass.** The update extends the existing Modulith outbox, the console totals, and the localhost Compose ports. |
+| Covers the spec capabilities | **Pass.** CAP-1 through CAP-8 stay on AD-1 through AD-9. The sale totals log remains the CAP-7 tally. |
+| Parent spine inherited without a local AD weakening it | **Pass.** This is the initiative spine. No parent. The amendments do not loosen the order JSON, the outbox commit, or the sale log. |
+| Every dimension this altitude owns is decided, deferred, or an open question | **Pass.** Deployment, infra, and local observability are decided. Process supervision, health, alerting, and a hosted environment are deferred with a revisit condition. The sampling and export-failure gaps sit inside AD-11; they are not a silent dimension. |
 
 ## Findings
 
-### 1. Critical — The first customer insert does not enforce one row
+### 1. High — AD-5's KafkaTemplate switch does not keep the outbox send in the order's trace
 
-AD-6 says one customer row per user ID, and that an admitted transaction which finds no row inserts one before it locks the item row. AD-3 says this prevents a deduction past the customer limit of 3. AD-4's lock order applies to a row that already exists.
+AD-5 prevents a new root trace on the send. The rule says `spring.kafka.template.observation-enabled=true` makes the single `KafkaTemplate` write W3C `traceparent`, that application code must not add that header through a second producer, a producer interceptor, or `EventExternalizationConfiguration.headers`, and that the externalization thread propagates the request trace.
 
-Two admitted first attempts for the same user ID can both see no row, both insert, and both lock a different customer row before they touch the item. Each then deducts up to 3. The pool's conditional update still stops an oversell of the item. The customer limit does not hold, and the one-hour wait is stored on two rows.
+Spring Modulith 2.1.1's Namastack Kafka handler is `(payload, metadata) -> externalizer.externalizeBlocking(payload)`. The metadata map, which is where a stored `traceparent` would sit, is discarded. The transport then copies headers only from `EventExternalizationConfiguration.getHeadersFor(payload)`, the hook the rule forbids, and calls `KafkaOperations.send`. Observation writes `traceparent` from the span that is current on that call.
 
-The cardinality is stated. The insert path has no unique user ID and no "on conflict, lock the existing row and continue in this transaction." Disposition: **autofix**.
+The brownfield send is not on the request thread. `Orders` publishes `OrderAccepted` inside the transaction. `spring.modulith.events.externalization.mode=outbox` records that event through Namastack, and a later poller sends it. `namastack-outbox-starter-jdbc` 1.7.3, which `spring-modulith-starter-namastack` 2.1.1 already pulls, does not depend on `namastack-outbox-observability`. That separate module, which exists at 1.7.3, is what stores the active W3C context on the outbox row and restores a child span around the handler. It is not in the stack and not on the classpath. Without it, the poller has no request span, and the mandated switch writes a new root `traceparent`.
 
-### 2. High — The wait and the customer limit are stored, and are not guards on the deduction
+Two telemetry stories can still diverge: one sets only `observation-enabled` and ships a new trace; another adds `namastack-outbox-observability` 1.7.3 so the handler runs inside the restored span and the same template writes that trace. The rule forbids both the new root and the header hooks that could copy a stored `traceparent`. Disposition: **discuss**. Continuing the trace means requiring the observability module so the existing `KafkaTemplate` send sees the restored span, or allowing a header taken from the stored context. Those are different mechanisms.
 
-FR-3, FR-4, and FR-5 are in `binds`. The capability map assigns them to AD-3, AD-4, and AD-6.
+### 2. Medium — AD-11 names the URLs and leaves Boot's export switches off
 
-What the rules actually require:
+AD-11 prevents a second exporter beside Micrometer, and a protocol other than OTLP. The rule says Micrometer exports metrics to `http://localhost:4318/v1/metrics` and traces to `http://localhost:4318/v1/traces`, and that `opentelemetry-logback-appender-1.0` `2.32.0-alpha` exports logs to `http://localhost:4318/v1/logs` after `OpenTelemetryAppender.install` on the Boot `OpenTelemetry` bean.
 
-- AD-6 stores units already ordered and the earliest next order time, written on a successful order, from PostgreSQL's clock plus one hour.
-- AD-4 evaluates sold out, then the one-hour wait, then a customer-limit refusal. Sold out still wins during the wait.
-- AD-3 computes the smaller of the request, the pool, and the units left under 3, and conditional-updates the item when the pool still holds that many.
+Spring Boot 4.1.1 splits those pipes:
 
-What a builder can still do while following those sentences:
+- `micrometer-registry-otlp`, already inside `spring-boot-starter-opentelemetry`, exports metrics. The URL property is `management.otlp.metrics.export.url`. The registry does not export traces.
+- Traces leave through the starter's `OtlpHttpSpanExporter` only after `management.opentelemetry.tracing.export.otlp.endpoint` is set. HTTP is the default transport.
+- The logback appender does not open HTTP. It writes into the Boot `OpenTelemetry` bean. Boot does not configure log export until `management.opentelemetry.logging.export.otlp.endpoint` is set. `OpenTelemetryAppender.install` matches the Boot 4.1 logger docs, and `2.32.0-alpha` is the current Maven Central line (there is no stable line).
 
-- Treat AD-4 as the order of messages and still run AD-3's update during the wait. Nothing says a future next-allowed time skips the pool update and writes no outbox row.
-- Compute the smaller-of number from a customer read taken before the customer-row lock. AD-4 says lock customer then item when both rows are updated. It does not say the units-left and next-allowed checks are re-read under that lock before the deducted quantity is fixed. Two attempts on one existing row can both pass the limit.
+The sampler default is `parent-based-trace-id-ratio` with `management.tracing.sampling.probability=0.1`, and unsampled spans are not exported. One story can leave that default. Another can set probability `1` or `always-on`. The collector then sometimes has this order's trace and sometimes does not. TEL-4's "a person can read that order's trace" follows the second choice.
 
-AD-3's prevent ("a deduction past the customer limit of 3") and FR-3's side effects (nothing deducted, no order event) are not what the rules enforce. The response-order sentence in AD-4 does match the PRD's precedence, and that part should stay. Disposition: **autofix** — under the customer-row lock, a wait hit and a zero-units-left hit write no pool change and no outbox row; the smaller-of quantity is taken from that locked read.
+The Prevent line also fights the Rule. Logs are required to go through the OpenTelemetry appender, which is the second exporter TEL-4 asks for, and traces go through the OTel span exporter, not the Micrometer metrics registry. A reader who obeys the Prevent drops the log export. Disposition: **autofix**. Name the metrics URL, the tracing endpoint, and the logging endpoint, all OTLP over HTTP. For this one local environment, sample every trace. Rewrite the Prevent so it keeps one metrics registry, one trace exporter, and one log appender, and still bars a second protocol, an agent, and a metrics view in place of the sale log.
 
-### 3. High — The order-service contract stops at the happy-path JSON
+### 3. Medium — A down collector can still change the shopper outcome
 
-Scope is this service and its boundary with the separate order service. AD-5 fixes the topic `inventory.order-accepted`, the order id as the message key, a JSON object with string `orderId`, string `userId`, string `itemId`, and integer `unitsDeducted`, `spring-modulith-events-kafka`, no schema registry, and no second producer. That stops a second encoding.
+AD-1 already says the Kafka send is after the outcome returns, and a broker delay does not change that outcome. AD-11 puts metrics, traces, and logs on the same host process and does not say where export sits relative to that transaction.
 
-The memlog decision also binds this service and the order service by leaving out the original requested quantity, payment, and fulfillment, so the order service can continue without those fields. The Rule never closes the object and never puts a duty on the consumer. A producer can add fields. A consumer can require payment or fulfillment before it continues. Both still match the written rule.
+A telemetry story can export inside the AD-1 transaction, block the page on the collector, or fail the order when `localhost:4318` is down. The finished sale and this epic share the process. The sale totals lines can also disappear if a story treats a failed export as a failed request. Disposition: **autofix**. State that OTLP export runs outside the AD-1 transaction, and that collector delay or failure leaves the shopper outcome and the AD-8 console lines unchanged.
 
-The outbox sends after commit and can send the same row more than once. The spine never says delivery is at-least-once, and never says the order service treats `orderId` as the idempotency key. The two services can choose incompatibly: this service retries, the order service inserts a new order per message. The paradigm name does not bind a service that lives outside this repo. Disposition: **autofix**.
+## Deferred
 
-### 4. High — Page and inventory can still diverge on admission overflow
+None of these let two units pick incompatible behavior. The shared rule is already in an AD; only the number, the text, or the later environment is open.
 
-AD-2 correctly gives the gate to the inventory module and rendering to the page module. AD-4 then allows two overflow behaviors: wait in the application, or turn the attempt away with no transaction. Jitter applies only after a turn-away. The page waits for its turn, and a still-waiting attempt is not sold out while the pool is above zero.
+- Admission-gate concurrency number. Turn-away stays a page retry, not a shopper outcome.
+- Order-id character format. The id stays a unique opaque string, stored in the commit, and never reused.
+- Starting pool quantity. It lives only on the seeded item row.
+- Wording of the totals log line. The inventory module still owns the three totals, and AD-11 already fixes the `trace_id` and `span_id` labels.
+- HTTP path of the form. It stays inside the page module.
+- Process supervision, health checks, and alerting on an unpublished outbox row. Revisit when the process is no longer started by hand.
+- A hosted environment. Revisit when a launch target exists.
+- Tempo, Loki, and a hosted log aggregator. Until then the collector debug exporter is the trace and log view.
+- Restock and clearing the sold-out hint. Revisit only if the pool can increase after zero.
 
-The conventions name four outcomes for a positive quantity: in process, wait one hour, sold out, and refused. Turn-away is a fifth result with no shared name. The page module can show an error, retry silently, or show sold out. The inventory module can block, or return a code the page has no rule for. Those are the two units this altitude exists to keep aligned.
+## What holds
 
-FR-6's "keeps their place in the request order" is the partial-fill case: the admitted attempt completes for the smaller quantity. AD-3 does that. This finding is the unnamed overflow result, not a claim that the PRD requires a global queue. The concurrency number itself may stay deferred; one module owns it. Disposition: **autofix** the shared outcome (wait in the call, or a named turn-away the page must render). Leave the number under Deferred.
+AD-8 keeps the inventory log as the sale tally. Micrometer and the OpenTelemetry log export may sit beside `requests`, `queries`, and `updates`. They do not replace those lines. That matches the spec constraint, CAP-7, and `SaleTotals`, which already writes those totals from the inventory module only.
 
-### 5. High — Operations is a silent dimension
+AD-10 adds `otel/opentelemetry-collector:0.162.0`, `prom/prometheus:v3.15.0`, and `grafana/grafana:13.2.3` to the existing host-plus-Compose layout. The Boot process stays on the host and uses localhost. Compose services call each other by service name. The current `compose.yaml` already publishes PostgreSQL `localhost:5432` (`flashsale` / `flashsale` / `flashsale`) and Kafka `localhost:9092`, and creates `inventory.order-accepted`. The core collector image at 0.162.0 includes the Prometheus exporter, so port 8889 is a real scrape target, and the debug exporter is in that same image.
 
-Initiative altitude owns the operational envelope. Deployment and environments are decided: AD-10 is one local environment, the Boot process on the host, Compose for PostgreSQL and Kafka, localhost addresses, and a hosted environment deferred until a launch target exists. Infra is decided the same way: `postgres:18.6` and `apache/kafka:4.3.1`, ports published to the host, no second topology.
+AD-11's shape is right where it is specific: three OTLP HTTP paths, the console appender kept, Micrometer MDC keys `traceId` and `spanId` printed as `trace_id` and `span_id`, Grafana reading Prometheus only, and Tempo and Loki left out. The order event's four JSON properties and message key are unchanged. `traceparent` is a Kafka header, not a JSON property.
 
-Operations is neither a decision, a deferred item, nor an open question. Nothing says how many processes may run, what supervises them, how a failed publish is noticed, or what an operator does when the process restarts beyond AD-8's "totals reset." Two host JVMs use localhost, share one Compose file, and satisfy AD-10. They also split the sale totals and multiply AD-4's connection bound. Disposition: **discuss**. The matching decision is a single process. Health and supervision can be deferred in the same pass, with a revisit condition, so the dimension is no longer silent.
+CAP-1 through CAP-8 remain covered by AD-1 through AD-9. There is no parent spine. The new sentences do not weaken the outbox commit, the module direction, or the customer-limit guards.
 
-### 6. Medium — Two Prevent lines are wider than their Rules
+## Versions checked 2026-10-09
 
-- AD-4 prevents "a second stock count." The rule says a sold-out hint *may* answer later attempts, and that the item row remains the authority for every deduction. A second counter is still allowed. The hint is optional, so the prevent is not a rule.
-- AD-7 prevents "a browser JSON API." The rule requires a Thymeleaf form and an in-process call. It does not say that form is the only HTTP entry. A JSON route beside the form still serves the Thymeleaf page.
-
-AD-4's other prevents do hold: first-request jitter is limited to post-turn-away retries, lock order is customer then item, and a waiting attempt is not labeled sold out while the pool is above zero. Disposition: **autofix** the two prevents so each is a prohibition in the Rule, or narrow the Prevent text to what the Rule actually stops.
-
-### 7. Medium — The four shopper outcomes are a sentence, not a return contract
-
-The conventions row lists in process, wait one hour, sold out, and refused. No AD says the inventory module returns that closed set and the page module renders that set and nothing else. FR-1 through FR-5 make the shopper-visible result testable. Page and inventory can use different codes for the same case. Folding this into finding 4 is enough if the overflow outcome is added to the same closed set. Disposition: **autofix**.
-
-### 8. Medium — Two stack pins lack support in the version record
-
-Memlog `(version)` entries, treated here as the research record, support Java 17, Spring Boot 4.1.1, Spring Modulith 2.1.1, PostgreSQL 18.6, and the `postgres:18.6` image. Kafka `4.3.1` and `apache/kafka:4.3.1` are not `(version)` lines. A decision dated 2026-09-29 records them as the current stable download and rejects the 4.4.0 release-candidate tags, so the memlog does support those pins.
-
-These pins are not supported that way:
-
-- `namastack-outbox-starter-jdbc` 1.7.3 is asserted in a decision ("pulled by `spring-modulith-starter-namastack` 2.1.1") with no currency check. The starter's 2.1.1 matches the verified Modulith line. 1.7.3 is a different line.
-- `flyway-database-postgresql` appears in the stack table and nowhere in the memlog. The decision says "Flyway's PostgreSQL module" and that `spring-boot-starter-flyway` is on the Boot 4.1.1 BOM. That supports Flyway-on-the-BOM. It does not support this artifact id.
-
-`spring-boot-starter-thymeleaf` 4.1.1 and `spring-boot-starter-flyway` 4.1.1 are named as Boot 4.1.1 BOM starters. `spring-modulith-events-kafka` 2.1.1 matches the verified Modulith version. Those pins stand. Disposition: **discuss** — either add a version-record check for 1.7.3 and the Flyway module id, or stop naming artifacts the memlog does not identify.
-
-## Deferred sweep
-
-None of these let the page module and the inventory module, or this service and the order service, choose incompatibly. Each leaves a choice inside one owner, with the cross-unit constraint already in a rule.
-
-| Deferred item | Why it does not fork two units |
+| Pin | Check |
 | --- | --- |
-| Admission-gate concurrency number | Inventory owns the gate (AD-2). The rule still requires a bound. The missing piece is the shared overflow *outcome* (finding 4), not the number. |
-| Order-id generation algorithm | The id stays a unique opaque string. The order service is told not to parse it. The open piece is idempotency on that id (finding 3), which is not what this bullet defers. |
-| Starting pool quantity and item-id characters | Both come from the one Flyway seed (AD-9). The form submits that seeded item id (AD-7). |
-| Wording of the totals log line | Inventory is the only writer (AD-8). |
-| HTTP path of the form | The page module owns the form. Inventory is an in-process call (AD-7). |
-| Response copy when the quantity is not a positive integer | AD-3 already forbids a deduction and an outbox row. Copy is the page's. This does not open a second mutation path. |
-| A hosted environment | AD-10 allows one environment in this build. |
-| Restock, and clearing the sold-out hint | No path increases the pool. The hint stays valid while the pool only falls. The revisit condition matches that. |
-
-## Dimensions
-
-| Dimension | State |
-| --- | --- |
-| Paradigm and mutation | Decided. Transactional outbox, conditional pool update, customer row in the same transaction. |
-| Boundaries | Decided. `page` depends on `inventory`. Inventory publishes. The order service is outside this application. |
-| Shared data and schema | Decided. Flyway for item and customer, Namastack JDBC for outbox tables, JDBC for those rows, no Hibernate schema. |
-| Identity | Decided. Opaque user id, no account store, no authentication. |
-| Client channel | Decided. One Thymeleaf form, one seeded item. Exclusivity of that HTTP entry is finding 6. |
-| Deployment and environments | Decided for local. Hosted is deferred with a revisit condition. |
-| Infra / provider | Decided. Compose images and localhost. No cloud provider, because the hosted environment is deferred. |
-| Operations | **Silent.** Finding 5. |
-| Integration contract | Decided for the topic and the four fields. Delivery and idempotency are finding 3. |
-
-## What held
-
-- **Greenfield.** The repo has no application source, build file, or running service. The spine has no brownfield conventions to ratify and none it can contradict.
-- **No parent spine.** There is no Inherited Invariants section and no parent AD set. Memlog constraints are PRD inputs, not inherited ADs. No local rule renumbers or weakens a parent AD.
-- **AD-1** binds the pool update, the customer-row update, and the outbox insert to one PostgreSQL transaction, Modulith mode `outbox`, send after commit, and no outbox row when the conditional update changes nothing. The page module does not publish.
-- **AD-2** is an enforceable dependency rule: inventory owns mutation, the gate, the rows, and publication; the page renders; inventory does not depend on the page.
-- **AD-3** prevents two requests from deducting the same remaining pool units, via a conditional update for a positive integer. The customer-limit half of that prevent is finding 2.
-- **AD-8** defines a request, includes every statement this application runs (including the outbox publisher), keeps totals in process memory, and resets them on restart. That covers SM-1 and SM-2 as bound.
-- **AD-9 and AD-10** are concrete enough that two builders cannot split schema ownership or point one config at Compose DNS and another at localhost.
-- **Binds coverage is present as a map.** FR-1 through FR-6, SM-1, and SM-2 each have a home. The holes are side effects and cross-service duties, not missing rows.
-- **FR-6 partial fill** is the smaller-of update on the admitted attempt. That is the place-in-line the PRD states for that edge.
-
-## Low
-
-- The sequence diagram shows the inventory participant sending to Kafka and then returning the outcome. AD-1's externalization sends after commit and does not say the shopper response waits on the broker. A builder can block the page on the publish. Disposition: **autofix** the diagram so the outcome follows the commit, and the send is after that commit.
-- The seed tree uses `src/main/java/<application>/`. The package name is neither chosen nor deferred, so two modules can root themselves differently. Disposition: **defer** with "pick one base package when the Initializr project is generated."
-- `spring-kafka` 4.1.1 is a "brings" claim in a decision, not a `(version)` entry. It is transitive from `spring-modulith-events-kafka` 2.1.1. Disposition: **ignore** unless the stack table is meant to pin only artifacts that were checked on their own.
-- The first diagram draws both the inventory module and the order service pointing at the topic. As a dependency picture that is coherent. As a data-flow picture it looks like a second producer, which AD-5 forbids. Disposition: **autofix** the arrow or the label so consumption and publication are distinct.
-
-## Suggested fix order
-
-1. Autofix finding 1 and finding 2 together. They are one customer-row critical section: uniqueness under concurrency, and checks taken under that lock that skip the deduction.
-2. Autofix finding 3 (closed payload, at-least-once, `orderId` idempotency for the order service).
-3. Autofix finding 4 and finding 7 as one closed outcome set, including overflow.
-4. Discuss finding 5, then write either "one process" or an explicit operations deferral.
-5. Autofix finding 6. Discuss finding 8 before the stack table is treated as verified.
+| `otel/opentelemetry-collector:0.162.0` | Current stable collector image. `0.163` is nightly. The core manifest includes the Prometheus exporter and the debug exporter. |
+| Prometheus `3.15.0` / `prom/prometheus:v3.15.0` | Latest release, 2026-09-24. |
+| Grafana `13.2.3` / `grafana/grafana:13.2.3` | Stable release, 2026-09-29. |
+| `opentelemetry-logback-appender-1.0` `2.32.0-alpha` | Current Maven Central version. No non-alpha line. |
+| `spring-boot-starter-opentelemetry` on Boot 4.1.1 | Published. It brings `micrometer-registry-otlp` and the OTLP span exporter. |
+| Existing pins (Boot 4.1.1, Modulith 2.1.1, Namastack JDBC 1.7.3, PostgreSQL 18.6, Kafka 4.3.1, Java 17) | Still the brownfield coordinates. `namastack-outbox-observability` 1.7.3 is on Maven Central and is not pulled by the JDBC starter. |

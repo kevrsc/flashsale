@@ -141,7 +141,7 @@
       <h2 id="s5">One commit, then the event</h2>
       <p>The outbox row is the order event, stored in the database with the deduction so the event cannot exist without the deduction.</p>
       <p>A successful order writes three things in one database transaction: the customer row, the item pool, and the outbox row.</p>
-      <p>Kafka is told after that commit, and after the page has the outcome. If the pool update matches no row, the whole transaction is discarded. The customer does not keep units that were never taken.</p>
+      <p>Kafka is told after that commit, and after the page has the outcome. The request's trace is stored with the outbox row and restored when the event is sent, so the Kafka record stays on that same trace. If the pool update matches no row, the whole transaction is discarded. The customer does not keep units that were never taken.</p>
       <figure>
         <svg viewBox="0 0 640 120" role="img" aria-labelledby="s5d">
           <title id="s5d">Commit the database first. Return the outcome. Then send Kafka.</title>
@@ -166,6 +166,7 @@
       <h2 id="s6">What the other service receives</h2>
       <p>The topic is <code>inventory.order-accepted</code>. The message is JSON with four fields: order id, user id, item id, and the units actually deducted.</p>
       <p>The order id is the message key. Delivery can repeat. The same order id is the same purchase, not a second one.</p>
+      <p>The record also carries a <code>traceparent</code> header. That header is not a fifth JSON field. A later service uses it to continue the same trace.</p>
     </section>
 
     <section class="slide" aria-labelledby="s7">
@@ -176,8 +177,49 @@
 
     <section class="slide" aria-labelledby="s8">
       <h2 id="s8">Where it runs</h2>
-      <p>One application process on the host. PostgreSQL and Kafka run in Docker and are reached on localhost.</p>
-      <p>This architecture stops at that machine. A hosted environment waits until there is a launch to aim at.</p>
+      <p>One application process on the host. Docker Compose runs PostgreSQL, Kafka, an OpenTelemetry Collector, Prometheus, and Grafana. The application reaches them on localhost.</p>
+      <p>Inside Compose, Prometheus scrapes the collector, and Grafana reads Prometheus. This architecture stops at that machine. A hosted environment waits until there is a launch to aim at.</p>
+      <figure>
+        <svg viewBox="0 0 640 168" role="img" aria-labelledby="s8d">
+          <title id="s8d">The application on the host talks to five Compose services on localhost.</title>
+          <rect x="16" y="56" width="150" height="56" rx="8" fill="#fff" stroke="#9a3412" stroke-width="2"/>
+          <text x="91" y="89" text-anchor="middle" font-size="14" fill="#1c1915">Application</text>
+          <rect x="230" y="12" width="120" height="40" rx="8" fill="#fff" stroke="#1c1915"/>
+          <rect x="370" y="12" width="120" height="40" rx="8" fill="#fff" stroke="#1c1915"/>
+          <rect x="230" y="64" width="120" height="40" rx="8" fill="#fff" stroke="#1c1915"/>
+          <rect x="370" y="64" width="120" height="40" rx="8" fill="#fff" stroke="#1c1915"/>
+          <rect x="510" y="64" width="114" height="40" rx="8" fill="#fff" stroke="#1c1915"/>
+          <text x="290" y="38" text-anchor="middle" font-size="13" fill="#1c1915">PostgreSQL</text>
+          <text x="430" y="38" text-anchor="middle" font-size="13" fill="#1c1915">Kafka</text>
+          <text x="290" y="89" text-anchor="middle" font-size="13" fill="#1c1915">Collector</text>
+          <text x="430" y="89" text-anchor="middle" font-size="13" fill="#1c1915">Prometheus</text>
+          <text x="567" y="89" text-anchor="middle" font-size="13" fill="#1c1915">Grafana</text>
+          <path d="M166 84 H230" stroke="#1c1915" marker-end="url(#arrow3)"/>
+          <path d="M350 84 H370" stroke="#1c1915" marker-end="url(#arrow3)"/>
+          <path d="M490 84 H510" stroke="#1c1915" marker-end="url(#arrow3)"/>
+          <defs>
+            <marker id="arrow3" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+              <path d="M0 0 L8 4 L0 8 Z" fill="#1c1915"/>
+            </marker>
+          </defs>
+        </svg>
+      </figure>
+    </section>
+
+    <section class="slide" aria-labelledby="s8b">
+      <h2 id="s8b">How one order is seen</h2>
+      <p>Metrics and traces leave the application as OTLP and arrive at the collector. Logs go there too, and the console line prints the trace id and span id.</p>
+      <p>Grafana shows the metrics. A person reads the trace from the collector. The sale totals stay in the application log. Those metrics do not replace that log.</p>
+    </section>
+
+    <section class="slide" aria-labelledby="s8c">
+      <h2 id="s8c">What a person does in Grafana</h2>
+      <p>Grafana displays data. It does not store metrics, traces, or logs. A person opens it in a browser to look. The build wires the connections as files, so nobody adds them by clicking through Grafana.</p>
+      <ul>
+        <li>Metrics are stored in Prometheus. The build mounts a Prometheus connection and a dashboard. Opening Grafana shows the metric.</li>
+        <li>Traces can be shown only after Tempo stores them. The build would mount a Tempo connection the same way. Until then, the collector log is the trace.</li>
+        <li>Logs can be shown only after Loki stores them. The build would mount a Loki connection and a panel filtered by trace id. Until then, the console line is the log, and the sale totals stay on that line.</li>
+      </ul>
     </section>
 
     <section class="slide" aria-labelledby="s9">
@@ -185,6 +227,7 @@
       <ul>
         <li>How many transactions may touch the item row at once.</li>
         <li>The starting number of units, written once in the database seed.</li>
+        <li>Tempo and Loki, so Grafana can show traces and logs. The connections would be files, the same way as Prometheus.</li>
       </ul>
       <p class="note">Those choices sit inside one module. They do not change the commit, the shopper outcomes, or the order event.</p>
     </section>

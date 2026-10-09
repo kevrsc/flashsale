@@ -1,0 +1,67 @@
+# Stories in build order. id is stable and is not the order.
+
+[[entry]]
+id = 1
+type = "story"
+title = "The collector shows one order's trace"
+description = "Adds the local collector and exports one successful order's trace to it over OTLP HTTP."
+verify = "After one successful order, the collector log at detailed verbosity contains that order's trace id."
+covers = ["TEL-1", "TEL-2", "TEL-4"]
+after = ["epic-local-flash-sale-inventory"]
+hitl = true
+risk = "medium"
+
+[[entry]]
+id = 2
+type = "story"
+title = "The order event carries traceparent"
+description = "Restores the order's trace on the outbox worker and writes W3C traceparent on the existing Kafka record."
+verify = "A test reads traceparent on inventory.order-accepted, the JSON body and key are unchanged, and the header's trace id matches the order request's trace id."
+covers = ["TEL-5", "TEL-6"]
+after = [1, "epic-local-flash-sale-inventory"]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 3
+type = "story"
+title = "Grafana shows a metric from the run"
+description = "Adds Prometheus and Grafana and exports the service's Micrometer metrics through the collector."
+verify = "After one successful order, Grafana shows a metric from that run, sourced from Prometheus."
+covers = ["TEL-1", "TEL-2", "TEL-4"]
+after = [2, "epic-local-flash-sale-inventory"]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 4
+type = "story"
+title = "The log line carries the same trace id"
+description = "Prints the order's trace id and span id on the console log and exports that log to the collector."
+verify = "The console line for one order shows that trace id and span id, the sale totals lines are still present, and the collector has received the log."
+covers = ["TEL-3", "TEL-4"]
+after = [3, "epic-local-flash-sale-inventory"]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 5
+type = "story"
+title = "Refactor sweep"
+description = "Cleans up only what the telemetry stories left behind."
+verify = "The sale still places an order, and the trace, metric, log line, and traceparent header from the earlier stories still hold."
+covers = []
+after = [1, 2, 3, 4]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 6
+type = "story"
+title = "One order is visible across the signals"
+description = "Runs the epic's local checks for one successful order across the collector, Grafana, the log, and the Kafka headers."
+verify = "A person follows one successful order from the collector trace, to the log line, to the Kafka text headers, and sees that run's metric in Grafana."
+covers = ["TEL-1", "TEL-2", "TEL-3", "TEL-4", "TEL-5", "TEL-6"]
+after = [5, "epic-local-flash-sale-inventory"]
+hitl = true
+risk = "low"

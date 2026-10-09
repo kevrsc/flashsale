@@ -4,10 +4,10 @@ type: architecture-spine
 purpose: build-substrate
 altitude: initiative
 paradigm: transactional outbox
-scope: Flash-sale inventory service and its boundary with order services
+scope: Flash-sale inventory service, its boundary with order services, and the local telemetry stack
 status: final
 created: 2026-09-29
-updated: 2026-09-29
+updated: 2026-10-09
 binds:
   - FR-1
   - FR-2
@@ -67,13 +67,13 @@ flowchart LR
 
 - **Binds:** inventory module, the separate order service
 - **Prevents:** the order service decoding another format, fulfilling a different quantity, or opening a second purchase for the same order id
-- **Rule:** The topic is `inventory.order-accepted`. Inventory is the only producer. The order id is generated inside the AD-1 transaction, stored in that commit, and never reused, including after a restart. It is a unique opaque string and the Kafka message key. The value is UTF-8 JSON with exactly these properties and no envelope: string `orderId`, string `userId`, string `itemId`, and integer `unitsDeducted`. `unitsDeducted` is the number of units the successful conditional update subtracted. Publication is at-least-once through `spring-modulith-events-kafka`. The order service treats `orderId` as an idempotency key and does not open a second purchase for it. Payment, fulfillment, and the original requested quantity are absent.
+- **Rule:** The topic is `inventory.order-accepted`. Inventory is the only producer. The order id is generated inside the AD-1 transaction, stored in that commit, and never reused, including after a restart. It is a unique opaque string and the Kafka message key. The value is UTF-8 JSON with exactly these properties and no envelope: string `orderId`, string `userId`, string `itemId`, and integer `unitsDeducted`. `unitsDeducted` is the number of units the successful conditional update subtracted. Publication is at-least-once through `spring-modulith-events-kafka`. There is no schema registry. The order service treats `orderId` as an idempotency key and does not open a second purchase for it. Payment, fulfillment, and the original requested quantity are absent. The Kafka record also carries the W3C `traceparent` header as text. `tracestate` is present only when the propagator emits it. Those headers are not JSON properties. `io.namastack:namastack-outbox-observability` `1.7.3` stores the active W3C context on the outbox record when the event is scheduled inside the order request, and restores a child span on the outbox worker before the send. `spring-modulith-events-kafka` sends through the single `KafkaTemplate`. `spring.kafka.template.observation-enabled=true` makes that template write `traceparent` from the restored span. Application code does not add the trace header through a second producer, a producer interceptor, or `EventExternalizationConfiguration.headers`. The send runs after the AD-1 commit and stays in the same trace as the order request. A new root trace for the send is not allowed.
 
 ### AD-6 — Customer row [ADOPTED]
 
 - **Binds:** FR-3, FR-4, FR-5
 - **Prevents:** a per-order history, an application clock, two rows for one user id, and a customer list loaded before anyone can order
-- **Rule:** Flyway creates the customer table with a unique key on user id. One row stores the units that customer has successfully ordered and the earliest time they may order again. User id and item id compare as exact strings, with no trim and no case fold. A blank user id is rejected before a transaction, inserts no customer row, and uses the not-accepted outcome in AD-7. When an admitted transaction finds no row, it inserts one row for that user id before it locks the item row. If that insert conflicts, the transaction locks the existing row and continues. It does not insert a second row. A successful order writes the units and the next-allowed time in the AD-1 transaction. The next-allowed time is PostgreSQL's clock plus one hour. The page does not compute the wait.
+- **Rule:** Flyway creates the customer table with a unique key on user id. One row stores the units that customer has successfully ordered and the earliest time they may order again. User id and item id compare as exact strings, with no trim and no case fold. A blank user id is rejected before a transaction, inserts no customer row, and uses the not-accepted outcome in AD-7. When an admitted transaction finds no row, it inserts one row for that user id before it locks the item row. If that insert conflicts, the transaction locks the existing row and continues. It does not insert a second row. A successful order writes the units and the next-allowed time in the AD-1 transaction. The next-allowed time is PostgreSQL's clock plus one hour. A new customer row starts at zero units ordered, and its next-allowed time is null. Null is not a future wait. A successful order adds the units deducted to the stored total. It does not replace that total. The page does not compute the wait.
 
 ### AD-7 — Landing page [ADOPTED]
 
@@ -85,7 +85,7 @@ flowchart LR
 
 - **Binds:** SM-1, SM-2, SM-C1
 - **Prevents:** a second tally in the page, a counter table on the hot path, a metrics endpoint in place of the log, and two different database totals for the same statements
-- **Rule:** The inventory module alone keeps running totals and writes them to the application log. A request is an order attempt that reaches inventory, including success, the one-hour wait, refusal, sold out, not accepted, and an admission-gate turn-away. Opening the page without ordering is not a request. Every database statement from inventory JDBC and from the outbox publisher counts, including statements that change zero rows. A `SELECT` is a query. An `INSERT`, `UPDATE`, or `DELETE` is an update. The totals are process memory in the one process from AD-10. They reset when that process restarts. The counts do not make a sale successful. A deducted unit that was not in the pool, or a customer above the limit of 3, fails SM-C1.
+- **Rule:** The inventory module alone keeps running totals and writes them to the application log. A request is an order attempt that reaches inventory, including success, the one-hour wait, refusal, sold out, not accepted, and an admission-gate turn-away. Opening the page without ordering is not a request. Every database statement from inventory JDBC and from the outbox publisher counts, including statements that change zero rows. A `SELECT` is a query. An `INSERT`, `UPDATE`, or `DELETE` is an update. The totals are process memory in the one process from AD-10. They reset when that process restarts. The counts do not make a sale successful. A deducted unit that was not in the pool, or a customer above the limit of 3, fails SM-C1. Micrometer metrics and the OpenTelemetry log export from AD-11 may sit beside this log. They are not the sale tally and do not replace these lines.
 
 ### AD-9 — Schema ownership [ADOPTED]
 
@@ -97,7 +97,13 @@ flowchart LR
 
 - **Binds:** the whole service
 - **Prevents:** two host processes, one configuration using Compose service names while another uses localhost, and a second deployed environment in this build
-- **Rule:** This spine has one environment and one Boot process on the host. Docker Compose runs `postgres:18.6` and `apache/kafka:4.3.1`. PostgreSQL is `localhost:5432`, database `flashsale`, user `flashsale`, password `flashsale`. Kafka is advertised and reached at `localhost:9092`. Compose creates the topic `inventory.order-accepted` before the application publishes. Application configuration uses these localhost addresses.
+- **Rule:** This spine has one environment and one Boot process on the host. Docker Compose runs `postgres:18.6`, `apache/kafka:4.3.1`, `otel/opentelemetry-collector:0.162.0`, `prom/prometheus:v3.15.0`, and `grafana/grafana:13.2.3`. PostgreSQL is `localhost:5432`, database `flashsale`, user `flashsale`, password `flashsale`. Kafka is advertised and reached at `localhost:9092`. Compose creates the topic `inventory.order-accepted` before the application publishes. The collector receives OTLP HTTP at `localhost:4318`. Prometheus is `localhost:9090`. Grafana is `localhost:3000`. Compose service names are `otel-collector`, `prometheus`, and `grafana`. Prometheus scrapes `otel-collector:8889`. Grafana's datasource is `http://prometheus:9090`. The Boot process uses the localhost addresses. Compose services call each other by those service names. `localhost` inside a Compose container is that container. Application configuration does not use Compose service names.
+
+### AD-11 — Signal export [ADOPTED]
+
+- **Binds:** the host Boot process, the collector, Prometheus, Grafana
+- **Prevents:** a second metrics registry, a second trace exporter, a second log appender, an export by a protocol other than OTLP, a metrics view in place of the sale totals log, Grafana reading a store this Compose file does not run, and a collector failure changing the shopper outcome
+- **Rule:** The host process uses `spring-boot-starter-opentelemetry` and `micrometer-registry-otlp` on the Spring Boot 4.1.1 BOM. Metrics export is `management.otlp.metrics.export.url=http://localhost:4318/v1/metrics`. Trace export is `management.opentelemetry.tracing.export.otlp.endpoint=http://localhost:4318/v1/traces`. Log export is `management.opentelemetry.logging.export.otlp.endpoint=http://localhost:4318/v1/logs`. This local environment sets `management.tracing.sampling.probability=1`. Logs go through `io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender` from `opentelemetry-logback-appender-1.0` `2.26.0-alpha`, which declares OpenTelemetry API `1.60.1`. Spring Boot 4.1.1's managed OpenTelemetry `1.62.0` wins for `io.opentelemetry` artifacts. A newer appender that requires OpenTelemetry `1.66.0` is not used. `OpenTelemetryAppender.install` runs on the Boot `OpenTelemetry` bean. `logback-spring.xml` keeps the console appender. The pattern reads `%X{traceId}` and `%X{spanId}` and prints those values under the labels `trace_id` and `span_id`. It does not read MDC keys named `trace_id` or `span_id`. The sale totals lines from AD-8 stay on that console log. The collector config receives the three OTLP signals. Its metrics pipeline exports on `0.0.0.0:8889` for Prometheus to scrape. The collector's own telemetry does not use that port. Traces and logs go to the debug exporter with `verbosity: detailed`, so the collector log contains the order's trace id. A slow or unavailable collector does not change the shopper outcome or whether the order event is sent. Grafana's datasource is Prometheus. That datasource and the dashboard for the sale metric are files Compose mounts into Grafana. A person opens Grafana to look and does not create the connection by hand. Tempo and Loki are not in this Compose file. When they are added, their Grafana connections are files of the same kind.
 
 ## Consistency Conventions
 
@@ -105,7 +111,7 @@ flowchart LR
 | --- | --- |
 | Naming | Modulith modules are `inventory` and `page`. The topic is `inventory.order-accepted`. JSON properties are `orderId`, `userId`, `itemId`, `unitsDeducted`. |
 | Data and formats | Order id, user id, and item id are exact opaque strings. Units are integers. The one-hour deadline uses PostgreSQL's clock. |
-| State and cross-cutting | Customer limit is 3. Shopper outcomes are the AD-7 set. Counts are log lines from the inventory module. No account store. |
+| State and cross-cutting | Customer limit is 3. Shopper outcomes are the AD-7 set. Counts are log lines from the inventory module. Trace context is W3C `traceparent` on the Kafka record and Micrometer MDC keys `traceId` and `spanId` on the log. No account store. |
 | Build | Gradle Groovy, the current Spring Initializr default. The Spring Boot parent coordinate is `4.1.1`. The generator token `4.1.1.RELEASE` is not a Maven Central coordinate. Dependencies are the stack table. Initializr's Modulith checkbox and Kafka checkbox are not substitutes for `spring-modulith-starter-namastack` and `spring-modulith-events-kafka`. |
 
 ## Stack
@@ -130,6 +136,15 @@ flowchart LR
 | Docker image postgres | 18.6 |
 | Apache Kafka | 4.3.1 |
 | Docker image apache/kafka | 4.3.1 |
+| Docker image otel/opentelemetry-collector | 0.162.0 |
+| Docker image prom/prometheus | v3.15.0 |
+| Prometheus | 3.15.0 |
+| Docker image grafana/grafana | 13.2.3 |
+| Grafana | 13.2.3 |
+| spring-boot-starter-opentelemetry | Spring Boot 4.1.1 BOM |
+| micrometer-registry-otlp | Spring Boot 4.1.1 BOM |
+| opentelemetry-logback-appender-1.0 | 2.26.0-alpha |
+| namastack-outbox-observability | 1.7.3 |
 
 ## Structural Seed
 
@@ -139,9 +154,15 @@ flowchart LR
   subgraph compose["Docker Compose"]
     pg["postgres:18.6 localhost:5432"]
     kafka["apache/kafka:4.3.1 localhost:9092"]
+    otel["otel-collector:0.162.0 localhost:4318"]
+    prom["prometheus:v3.15.0 localhost:9090"]
+    graf["grafana:13.2.3 localhost:3000"]
   end
   app --> pg
   app --> kafka
+  app --> otel
+  otel --> prom
+  prom --> graf
 ```
 
 ```mermaid
@@ -160,7 +181,7 @@ sequenceDiagram
   Inventory->>DB: lock customer, lock item, conditional update, Modulith outbox event
   DB-->>Inventory: commit
   Inventory-->>Page: shopper outcome
-  Inventory->>Kafka: JSON order event after commit
+  Inventory->>Kafka: JSON order event and traceparent header after commit
 ```
 
 ```text
@@ -170,7 +191,9 @@ src/main/java/<application>/
 src/main/resources/
   db/migration/       # Flyway: item, customer, unique user id, item seed
   templates/          # landing page
-compose.yaml          # postgres:18.6 and apache/kafka:4.3.1, topic created here
+  logback-spring.xml  # console pattern plus OpenTelemetry log appender
+compose.yaml          # postgres, kafka, otel-collector, prometheus, grafana
+otel-collector-config.yaml
 ```
 
 ## Capability → Architecture Map
@@ -181,8 +204,9 @@ compose.yaml          # postgres:18.6 and apache/kafka:4.3.1, topic created here
 | Landing page | page module | AD-2, AD-7 |
 | Order event to other services | inventory outbox, then Kafka | AD-1, AD-5 |
 | Request and database counts, SM-1, SM-2, SM-C1 | inventory log | AD-3, AD-8 |
+| Metrics, traces, and exported logs | host process to the local collector | AD-8, AD-10, AD-11 |
 | Schema | Flyway and Namastack JDBC | AD-6, AD-9 |
-| Local run | one host process and Compose | AD-10 |
+| Local run | one host process and Compose | AD-10, AD-11 |
 
 ## Deferred
 
@@ -193,4 +217,5 @@ compose.yaml          # postgres:18.6 and apache/kafka:4.3.1, topic created here
 - HTTP path of the form. Revisit inside the page module.
 - Process supervision, health checks, and alerting on an outbox row that has not been published. The row remains until publish, and the publisher retries. Revisit when the process is no longer started by hand.
 - A hosted environment. Revisit when a launch target exists.
+- Tempo, Loki, and a hosted log aggregator. Revisit when Grafana itself must show traces and logs. Grafana does not store either signal. Tempo stores traces and Loki stores logs. Their Grafana connections and panels are files Compose mounts, the same way as the Prometheus datasource, and a person opens Grafana to look. Until then the collector debug exporter is the trace and log view, and the console pattern is what a hosted aggregator would parse.
 - Restock, and clearing the sold-out hint. Revisit only if the pool can increase after it hits zero.
