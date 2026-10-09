@@ -19,6 +19,7 @@ public class Admission {
 	}
 
 	public Attempt admit(String userId, int units) {
+		boolean succeeded = false;
 		try {
 			if (userId.isEmpty() || units < 1) {
 				return new Attempt.Shopper(OrderOutcome.notAccepted());
@@ -33,12 +34,14 @@ public class Admission {
 				if (orders.soldOutHint()) {
 					return new Attempt.Shopper(OrderOutcome.soldOut());
 				}
-				return new Attempt.Shopper(orders.place(userId, units));
+				OrderOutcome outcome = orders.place(userId, units);
+				succeeded = OrderOutcome.inProcess().equals(outcome);
+				return new Attempt.Shopper(outcome);
 			} finally {
 				permits.release();
 			}
 		} finally {
-			totals.request();
+			totals.request(succeeded);
 		}
 	}
 

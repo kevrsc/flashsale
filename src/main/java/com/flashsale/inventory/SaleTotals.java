@@ -5,6 +5,7 @@ import java.util.Locale;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -15,6 +16,8 @@ class SaleTotals {
 	private final Object lock = new Object();
 
 	private long requests;
+
+	private long successes;
 
 	private long queries;
 
@@ -33,10 +36,21 @@ class SaleTotals {
 		}
 	}
 
-	void request() {
+	void request(boolean succeeded) {
 		synchronized (lock) {
 			requests++;
+			if (succeeded) {
+				successes++;
+			}
 			write();
+		}
+	}
+
+	@Scheduled(fixedRateString = "${flashsale.sale-totals.interval-ms:60000}",
+			initialDelayString = "${flashsale.sale-totals.interval-ms:60000}")
+	void logInterval() {
+		synchronized (lock) {
+			log.info("requests={} successes={}", requests, successes);
 		}
 	}
 

@@ -48,13 +48,15 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.util.AopTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 
-@SpringBootTest
+@SpringBootTest(properties = "flashsale.sale-totals.interval-ms=200")
 @AutoConfigureMockMvc
 class OrderPoolEventTest {
 
 	private static final String TOPIC = "inventory.order-accepted";
 
 	private static final Pattern TOTALS = Pattern.compile("requests=(\\d+) queries=(\\d+) updates=(\\d+)");
+
+	private static final Pattern INTERVAL = Pattern.compile("requests=(\\d+) successes=(\\d+)");
 
 	@Autowired
 	private MockMvc mockMvc;
@@ -614,6 +616,32 @@ class OrderPoolEventTest {
 	}
 
 	@Test
+	void minuteLogCountsRequestsAndOnlyAcceptedOrders() throws Exception {
+		int mark = TotalsLogCapture.LINES.size();
+		Interval baseline = awaitInterval(mark);
+
+		mark = TotalsLogCapture.LINES.size();
+		mockMvc.perform(get("/")).andExpect(status().isOk());
+		awaitInterval(mark, baseline.requests(), baseline.successes());
+
+		mark = TotalsLogCapture.LINES.size();
+		String rejected = order("", 1);
+		assertTrue(rejected.contains("The order was not accepted"));
+		Interval afterReject = awaitInterval(mark, baseline.requests() + 1, baseline.successes());
+
+		String userId = "user-" + UUID.randomUUID();
+		mark = TotalsLogCapture.LINES.size();
+		String accepted = order(userId, 1);
+		assertTrue(accepted.contains("The order is in process"));
+		Interval afterAccept = awaitInterval(mark, afterReject.requests() + 1, afterReject.successes() + 1);
+
+		mark = TotalsLogCapture.LINES.size();
+		String waiting = order(userId, 1);
+		assertTrue(waiting.contains("Wait one hour before ordering again"));
+		awaitInterval(mark, afterAccept.requests() + 1, afterAccept.successes());
+	}
+
+	@Test
 	void negativeQuantityIsNotAccepted() throws Exception {
 		int pool = quantity();
 		int outboxBefore = outboxRows();
@@ -957,7 +985,55 @@ class OrderPoolEventTest {
 		return lines.subList(from, lines.size()).toString();
 	}
 
+	private static Interval awaitInterval(int mark) throws InterruptedException {
+		long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+		while (true) {
+			List<String> lines = TotalsLogCapture.LINES;
+			for (int i = mark; i < lines.size(); i++) {
+				Interval parsed = parseInterval(lines.get(i));
+				if (parsed != null) {
+					return parsed;
+				}
+			}
+			if (System.nanoTime() >= deadline) {
+				throw new AssertionError("no interval line after " + tail(lines));
+			}
+			Thread.sleep(20);
+		}
+	}
+
+	private static Interval awaitInterval(int mark, long requests, long successes) throws InterruptedException {
+		long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+		while (true) {
+			List<String> lines = TotalsLogCapture.LINES;
+			for (int i = mark; i < lines.size(); i++) {
+				Interval parsed = parseInterval(lines.get(i));
+				if (parsed != null && parsed.requests() == requests && parsed.successes() == successes) {
+					return parsed;
+				}
+			}
+			if (System.nanoTime() >= deadline) {
+				throw new AssertionError(
+						"no interval line requests=" + requests + " successes=" + successes + " after " + tail(lines));
+			}
+			Thread.sleep(20);
+		}
+	}
+
+	private static Interval parseInterval(String line) {
+		Matcher matcher = INTERVAL.matcher(line);
+		if (!matcher.matches()) {
+			return null;
+		}
+		Interval parsed = new Interval(Long.parseLong(matcher.group(1)), Long.parseLong(matcher.group(2)));
+		assertTrue(parsed.successes() <= parsed.requests(), line);
+		return parsed;
+	}
+
 	private record Totals(long requests, long queries, long updates) {
+	}
+
+	private record Interval(long requests, long successes) {
 	}
 
 }
