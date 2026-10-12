@@ -3,11 +3,13 @@ package com.flashsale;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.Statement;
 import java.time.Duration;
@@ -31,6 +33,7 @@ import javax.sql.DataSource;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.BeforeEach;
@@ -98,6 +101,42 @@ class OrderPoolEventTest {
 			assertNextAllowedAboutOneHourOut(userId);
 
 			assertOneEvent(consumer, userId, 1);
+		}
+	}
+
+	@Test
+	void orderEventCarriesTheRequestTrace() throws Exception {
+		String traceId = "4bf92f3577b34da6a3ce929d0e0e4736";
+		String userId = "user-" + UUID.randomUUID();
+		try (KafkaConsumer<String, String> consumer = consumer()) {
+			seekToEnd(consumer);
+			String body = mockMvc.perform(post("/")
+					.header("traceparent", "00-" + traceId + "-00f067aa0ba902b7-01")
+					.param("userId", userId)
+					.param("quantity", "1"))
+					.andExpect(status().isOk())
+					.andReturn()
+					.getResponse()
+					.getContentAsString();
+
+			assertTrue(body.contains("The order is in process"));
+			List<ConsumerRecord<String, String>> matched = poll(consumer, Duration.ofSeconds(20), userId).stream()
+					.filter(record -> record.value().contains(userId))
+					.toList();
+			assertEquals(1, matched.size());
+
+			ConsumerRecord<String, String> record = matched.get(0);
+			Map<String, Object> event = JsonParserFactory.getJsonParser().parseMap(record.value());
+			assertEquals(Set.of("orderId", "userId", "itemId", "unitsDeducted"), event.keySet());
+			assertEquals(userId, event.get("userId"));
+			assertEquals("item-1", event.get("itemId"));
+			assertEquals(1, ((Number) event.get("unitsDeducted")).intValue());
+			assertEquals(event.get("orderId"), record.key());
+
+			Header header = record.headers().lastHeader("traceparent");
+			assertNotNull(header);
+			String traceparent = new String(header.value(), StandardCharsets.UTF_8);
+			assertTrue(traceparent.startsWith("00-" + traceId + "-"), traceparent);
 		}
 	}
 

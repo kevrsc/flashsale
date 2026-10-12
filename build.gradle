@@ -25,6 +25,7 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-webmvc'
 	implementation 'org.flywaydb:flyway-database-postgresql:12.4.0'
 	implementation 'org.springframework.modulith:spring-modulith-starter-namastack:2.1.1'
+	implementation 'io.namastack:namastack-outbox-observability:1.7.3'
 	implementation 'org.springframework.modulith:spring-modulith-events-kafka:2.1.1'
 	runtimeOnly 'org.postgresql:postgresql'
 	testImplementation 'org.springframework.boot:spring-boot-starter-flyway-test'
