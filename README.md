@@ -145,3 +145,25 @@ Open `http://localhost:8080/`, enter a user id and a quantity, and submit. Grafa
 ```
 
 The tests use that same PostgreSQL and Kafka. Compose needs to be up.
+
+## Follow one order
+
+Place one successful order and read the same trace id in three places. Grafana shows the HTTP request count for that run.
+
+Start this before you submit. It waits for the next order event. `traceparent` begins with `00-` and the same trace id. The span id in that header is a child of the console span, so the two span ids differ. The JSON body is still `orderId`, `userId`, `itemId`, and `unitsDeducted`.
+
+```bash
+docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:19092 --topic inventory.order-accepted --partition 0 --offset latest --max-messages 1 --formatter-property print.headers=true --formatter-property print.key=true
+```
+
+Submit a user id and a quantity at `http://localhost:8080/`. The shopper sentence is "The order is in process". The console line for that order includes `trace_id`, `span_id`, and the sale totals `requests`, `queries`, and `updates`.
+
+Wait a few seconds after the page returns. The order span is exported in a batch, so it is not in the collector log the instant the page comes back. Then the collector log prints that trace id on the span named `http post /`:
+
+```bash
+docker compose logs otel-collector
+```
+
+Spans named `task outboxProcessingScheduler.process` are the publisher poll. They are not the order.
+
+Open `http://localhost:3000/`. The Orders dashboard is already there. Its HTTP server requests number counts requests, including this order. The number can take about a minute to move. It is not a separate series for one trace id.
