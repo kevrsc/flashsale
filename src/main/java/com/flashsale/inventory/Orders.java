@@ -54,12 +54,12 @@ public class Orders {
 		if (item.quantity() <= 0) {
 			return soldOut();
 		}
-		if (item.quantity() > 0 && customer.waiting()) {
+		int unitsLeft = CUSTOMER_LIMIT - customer.unitsOrdered();
+		if (customer.waiting() && unitsLeft <= 0) {
 			markRollbackOnly();
 			return OrderOutcome.waitOneHour();
 		}
-		int unitsLeft = CUSTOMER_LIMIT - customer.unitsOrdered();
-		if (item.quantity() > 0 && unitsLeft <= 0) {
+		if (unitsLeft <= 0) {
 			markRollbackOnly();
 			return OrderOutcome.refused();
 		}

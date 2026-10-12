@@ -268,8 +268,15 @@ class OrderPoolEventTest {
 			String first = order(userId, 1);
 			assertTrue(first.contains("The order is in process"));
 			assertOneEvent(consumer, userId, 1);
+
+			String more = order(userId, 2);
+			assertTrue(more.contains("The order is in process"));
+			assertFalse(more.contains("Wait one hour before ordering again"));
+			assertEquals(3, unitsOrdered(userId));
+			assertEquals(7, quantity());
+			assertOneEvent(consumer, userId, 2);
+
 			int pool = quantity();
-			int units = unitsOrdered(userId);
 			String deadline = nextAllowedText(userId);
 			int outboxBefore = outboxRows();
 			String body = order(userId, 1);
@@ -277,7 +284,7 @@ class OrderPoolEventTest {
 			assertTrue(body.contains("Wait one hour before ordering again"));
 			assertFalse(body.contains("The order is in process"));
 			assertEquals(pool, quantity());
-			assertEquals(units, unitsOrdered(userId));
+			assertEquals(3, unitsOrdered(userId));
 			assertEquals(deadline, nextAllowedText(userId));
 			assertEquals(1, customerRows());
 			assertNothingPublished(consumer, userId, outboxBefore);
@@ -501,7 +508,7 @@ class OrderPoolEventTest {
 	@Test
 	void waitLogsRequestAndDatabaseTotals() throws Exception {
 		String userId = "user-" + UUID.randomUUID();
-		String first = order(userId, 1);
+		String first = order(userId, 3);
 		assertTrue(first.contains("The order is in process"));
 		int mark = TotalsLogCapture.LINES.size();
 		Totals before = latestTotals();
@@ -631,7 +638,7 @@ class OrderPoolEventTest {
 
 		String userId = "user-" + UUID.randomUUID();
 		mark = TotalsLogCapture.LINES.size();
-		String accepted = order(userId, 1);
+		String accepted = order(userId, 3);
 		assertTrue(accepted.contains("The order is in process"));
 		Interval afterAccept = awaitInterval(mark, afterReject.requests() + 1, afterReject.successes() + 1);
 
@@ -676,18 +683,24 @@ class OrderPoolEventTest {
 			assertOneEvent(consumer, alex, 1);
 			assertDatabaseTotalsRose(firstMark, beforeFirst);
 
+			String secondUnit = order(alex, 1);
+			assertTrue(secondUnit.contains("The order is in process"));
+			assertEquals(8, quantity());
+			assertEquals(2, unitsOrdered(alex));
+			assertOneEvent(consumer, alex, 1);
+
+			String thirdUnit = order(alex, 1);
+			assertTrue(thirdUnit.contains("The order is in process"));
+			assertEquals(7, quantity());
+			assertEquals(3, unitsOrdered(alex));
+			assertOneEvent(consumer, alex, 1);
+
 			int outboxBeforeWait = outboxRows();
 			String waiting = order(alex, 1);
 			assertTrue(waiting.contains("Wait one hour before ordering again"));
-			assertEquals(9, quantity());
-			assertNothingPublished(consumer, alex, outboxBeforeWait);
-
-			elapseTheHour(alex);
-			String capped = order(alex, 5);
-			assertTrue(capped.contains("The order is in process"));
-			assertEquals(3, unitsOrdered(alex));
 			assertEquals(7, quantity());
-			assertOneEvent(consumer, alex, 2);
+			assertEquals(3, unitsOrdered(alex));
+			assertNothingPublished(consumer, alex, outboxBeforeWait);
 
 			elapseTheHour(alex);
 			int poolAtLimit = quantity();
