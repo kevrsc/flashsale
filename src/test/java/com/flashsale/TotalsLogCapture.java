@@ -10,15 +10,13 @@ public class TotalsLogCapture extends AppenderBase<ILoggingEvent> {
 
 	static final List<String> LINES = new CopyOnWriteArrayList<>();
 
-	static final List<String> TRACE_IDS = new CopyOnWriteArrayList<>();
-
-	static final List<String> SPAN_IDS = new CopyOnWriteArrayList<>();
+	static final List<ILoggingEvent> EVENTS = new CopyOnWriteArrayList<>();
 
 	@Override
 	protected void append(ILoggingEvent event) {
+		event.prepareForDeferredProcessing();
 		LINES.add(event.getFormattedMessage());
-		TRACE_IDS.add(event.getMDCPropertyMap().get("traceId"));
-		SPAN_IDS.add(event.getMDCPropertyMap().get("spanId"));
+		EVENTS.add(event);
 	}
 
 }

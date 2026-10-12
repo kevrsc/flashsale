@@ -6,7 +6,7 @@ This service does not take payment, fulfill the item, or create accounts. On a s
 
 ## Technology
 
-The Spring Boot application runs on the host. Docker Compose runs PostgreSQL and Kafka and publishes them on localhost.
+The Spring Boot application runs on the host. Docker Compose runs PostgreSQL, Kafka, the OpenTelemetry Collector, Prometheus, and Grafana. PostgreSQL is `localhost:5432`, Kafka is `localhost:9092`, the collector receives OTLP at `localhost:4318`, Prometheus is `localhost:9090`, and Grafana is `localhost:3000`.
 
 | Piece | Choice |
 | --- | --- |
@@ -138,7 +138,7 @@ docker compose up -d
 ./gradlew bootRun
 ```
 
-Open `http://localhost:8080/`, enter a user id and a quantity, and submit. PostgreSQL is `localhost:5432`, database `flashsale`, user `flashsale`, password `flashsale`. Kafka is `localhost:9092`. Those values are for this local Compose file.
+Open `http://localhost:8080/`, enter a user id and a quantity, and submit. Grafana is `http://localhost:3000/`. PostgreSQL is `localhost:5432`, database `flashsale`, user `flashsale`, password `flashsale`. Kafka is `localhost:9092`. The collector receives OTLP at `localhost:4318`. Prometheus is `localhost:9090`. Those values are for this local Compose file.
 
 ```bash
 ./gradlew test

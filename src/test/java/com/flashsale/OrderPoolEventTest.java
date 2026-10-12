@@ -32,10 +32,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.sql.DataSource;
 
-import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.PatternLayout;
-import ch.qos.logback.classic.spi.LoggingEvent;
+import ch.qos.logback.classic.spi.ILoggingEvent;
 
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -117,7 +116,7 @@ class OrderPoolEventTest {
 	void orderEventCarriesTheRequestTrace() throws Exception {
 		String traceId = "4bf92f3577b34da6a3ce929d0e0e4736";
 		String userId = "user-" + UUID.randomUUID();
-		int mark = TotalsLogCapture.LINES.size();
+		int mark = TotalsLogCapture.EVENTS.size();
 		try (KafkaConsumer<String, String> consumer = consumer()) {
 			seekToEnd(consumer);
 			String body = mockMvc.perform(post("/")
@@ -149,10 +148,11 @@ class OrderPoolEventTest {
 			assertTrue(traceparent.startsWith("00-" + traceId + "-"), traceparent);
 
 			int index = awaitSaleTotalsForTrace(mark, traceId);
-			String spanId = TotalsLogCapture.SPAN_IDS.get(index);
+			ILoggingEvent logged = TotalsLogCapture.EVENTS.get(index);
+			String spanId = logged.getMDCPropertyMap().get("spanId");
 			assertNotNull(spanId);
 			assertFalse(spanId.isBlank());
-			String line = formatWithProductionPattern(TotalsLogCapture.LINES.get(index), traceId, spanId);
+			String line = formatWithProductionPattern(logged);
 			assertTrue(line.contains("trace_id=" + traceId), line);
 			assertTrue(line.contains("span_id=" + spanId), line);
 		}
@@ -833,11 +833,11 @@ class OrderPoolEventTest {
 	private int awaitSaleTotalsForTrace(int mark, String traceId) throws InterruptedException {
 		long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
 		while (true) {
-			int limit = Math.min(TotalsLogCapture.LINES.size(),
-					Math.min(TotalsLogCapture.TRACE_IDS.size(), TotalsLogCapture.SPAN_IDS.size()));
+			int limit = Math.min(TotalsLogCapture.LINES.size(), TotalsLogCapture.EVENTS.size());
 			for (int i = mark; i < limit; i++) {
-				if (traceId.equals(TotalsLogCapture.TRACE_IDS.get(i))
-						&& TOTALS.matcher(TotalsLogCapture.LINES.get(i)).matches()) {
+				ILoggingEvent event = TotalsLogCapture.EVENTS.get(i);
+				if (traceId.equals(event.getMDCPropertyMap().get("traceId"))
+						&& TOTALS.matcher(event.getFormattedMessage()).matches()) {
 					return i;
 				}
 			}
@@ -849,21 +849,13 @@ class OrderPoolEventTest {
 		}
 	}
 
-	private static String formatWithProductionPattern(String message, String traceId, String spanId)
-			throws IOException {
+	private static String formatWithProductionPattern(ILoggingEvent event) throws IOException {
 		LoggerContext context = new LoggerContext();
 		context.start();
 		PatternLayout layout = new PatternLayout();
 		layout.setContext(context);
 		layout.setPattern(productionPattern());
 		layout.start();
-		LoggingEvent event = new LoggingEvent();
-		event.setLoggerName("com.flashsale.inventory.SaleTotals");
-		event.setLevel(Level.INFO);
-		event.setMessage(message);
-		event.setTimeStamp(System.currentTimeMillis());
-		event.setThreadName("test");
-		event.setMDCPropertyMap(Map.of("traceId", traceId, "spanId", spanId));
 		return layout.doLayout(event);
 	}
 
