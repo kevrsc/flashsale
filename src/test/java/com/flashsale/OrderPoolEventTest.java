@@ -9,6 +9,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.Statement;
@@ -29,6 +31,11 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.sql.DataSource;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.PatternLayout;
+import ch.qos.logback.classic.spi.LoggingEvent;
 
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -58,6 +65,8 @@ class OrderPoolEventTest {
 	private static final String TOPIC = "inventory.order-accepted";
 
 	private static final Pattern TOTALS = Pattern.compile("requests=(\\d+) queries=(\\d+) updates=(\\d+)");
+
+	private static final Pattern PRODUCTION_PATTERN = Pattern.compile("<pattern>([^<]*)</pattern>");
 
 	private static final Pattern INTERVAL = Pattern.compile("requests=(\\d+) successes=(\\d+)");
 
@@ -108,6 +117,7 @@ class OrderPoolEventTest {
 	void orderEventCarriesTheRequestTrace() throws Exception {
 		String traceId = "4bf92f3577b34da6a3ce929d0e0e4736";
 		String userId = "user-" + UUID.randomUUID();
+		int mark = TotalsLogCapture.LINES.size();
 		try (KafkaConsumer<String, String> consumer = consumer()) {
 			seekToEnd(consumer);
 			String body = mockMvc.perform(post("/")
@@ -137,6 +147,14 @@ class OrderPoolEventTest {
 			assertNotNull(header);
 			String traceparent = new String(header.value(), StandardCharsets.UTF_8);
 			assertTrue(traceparent.startsWith("00-" + traceId + "-"), traceparent);
+
+			int index = awaitSaleTotalsForTrace(mark, traceId);
+			String spanId = TotalsLogCapture.SPAN_IDS.get(index);
+			assertNotNull(spanId);
+			assertFalse(spanId.isBlank());
+			String line = formatWithProductionPattern(TotalsLogCapture.LINES.get(index), traceId, spanId);
+			assertTrue(line.contains("trace_id=" + traceId), line);
+			assertTrue(line.contains("span_id=" + spanId), line);
 		}
 	}
 
@@ -810,6 +828,53 @@ class OrderPoolEventTest {
 		jdbc.update(
 				"UPDATE customer SET next_allowed = clock_timestamp() - interval '1 second' WHERE user_id = ?",
 				userId);
+	}
+
+	private int awaitSaleTotalsForTrace(int mark, String traceId) throws InterruptedException {
+		long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+		while (true) {
+			int limit = Math.min(TotalsLogCapture.LINES.size(),
+					Math.min(TotalsLogCapture.TRACE_IDS.size(), TotalsLogCapture.SPAN_IDS.size()));
+			for (int i = mark; i < limit; i++) {
+				if (traceId.equals(TotalsLogCapture.TRACE_IDS.get(i))
+						&& TOTALS.matcher(TotalsLogCapture.LINES.get(i)).matches()) {
+					return i;
+				}
+			}
+			if (System.nanoTime() >= deadline) {
+				throw new AssertionError("no sale totals event for trace " + traceId + " after "
+						+ tail(TotalsLogCapture.LINES));
+			}
+			Thread.sleep(20);
+		}
+	}
+
+	private static String formatWithProductionPattern(String message, String traceId, String spanId)
+			throws IOException {
+		LoggerContext context = new LoggerContext();
+		context.start();
+		PatternLayout layout = new PatternLayout();
+		layout.setContext(context);
+		layout.setPattern(productionPattern());
+		layout.start();
+		LoggingEvent event = new LoggingEvent();
+		event.setLoggerName("com.flashsale.inventory.SaleTotals");
+		event.setLevel(Level.INFO);
+		event.setMessage(message);
+		event.setTimeStamp(System.currentTimeMillis());
+		event.setThreadName("test");
+		event.setMDCPropertyMap(Map.of("traceId", traceId, "spanId", spanId));
+		return layout.doLayout(event);
+	}
+
+	private static String productionPattern() throws IOException {
+		try (InputStream in = OrderPoolEventTest.class.getClassLoader().getResourceAsStream("logback-spring.xml")) {
+			assertNotNull(in);
+			String xml = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+			Matcher matcher = PRODUCTION_PATTERN.matcher(xml);
+			assertTrue(matcher.find(), xml);
+			return matcher.group(1).trim();
+		}
 	}
 
 	private void assertOneEvent(KafkaConsumer<String, String> consumer, String userId, int unitsDeducted) {

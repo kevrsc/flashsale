@@ -22,6 +22,7 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-jdbc'
 	implementation 'org.springframework.boot:spring-boot-starter-thymeleaf'
 	implementation 'org.springframework.boot:spring-boot-starter-opentelemetry'
+	implementation 'io.opentelemetry.instrumentation:opentelemetry-logback-appender-1.0:2.26.0-alpha'
 	implementation 'org.springframework.boot:spring-boot-starter-webmvc'
 	implementation 'org.flywaydb:flyway-database-postgresql:12.4.0'
 	implementation 'org.springframework.modulith:spring-modulith-starter-namastack:2.1.1'
