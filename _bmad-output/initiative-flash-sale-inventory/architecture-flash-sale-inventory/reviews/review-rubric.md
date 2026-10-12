@@ -2,70 +2,62 @@
 
 Verdict: **Revise**
 
-The spine was not edited. This is a good-spine checklist review of the updated initiative spine. The update amends AD-5, AD-8, and AD-10 and adds AD-11. CAP-1 through CAP-8 are unchanged, and the sale totals log is still the tally.
+The spine was not edited. This is a good-spine checklist review of the initiative spine after AD-8 and AD-11 moved the sale tally off the running-total log and onto two Micrometer counters.
 
-- Spine: `architecture-flash-sale-inventory/architecture-flash-sale-inventory.md` (final, altitude initiative, updated 2026-10-09)
+- Spine: `architecture-flash-sale-inventory/architecture-flash-sale-inventory.md` (final, altitude initiative, updated 2026-10-12)
 - Memlog: `architecture-flash-sale-inventory/.memlog.md`
-- Driving spec: `spec-flash-sale-inventory/spec-flash-sale-inventory.md` (CAP-1 through CAP-8)
-- Telemetry scope: `epic-local-sale-telemetry/epic-local-sale-telemetry.md` (TEL-1 through TEL-6)
-- Brownfield: the running service (`build.gradle`, `compose.yaml`, `application.properties`, `inventory` and `page`)
-- Lint: `lint_spine.py` reported `ok: true`, no mechanical findings
+- Driving sources: `prd-flash-sale-inventory/prd-flash-sale-inventory.md` (SM-1, SM-2, SM-C1); spec companion `spec-flash-sale-inventory/spec-flash-sale-inventory.md` (CAP-7 and the log constraint)
+- Telemetry scope still on the old tally: `epic-local-sale-telemetry/epic-local-sale-telemetry.md` (TEL-3)
+- Brownfield: `SaleTotals`, `Admission.admit`, `build.gradle`, `application.properties`
 
-The order JSON, the sale log, the single host process, and the three new Compose services are real contracts. Handoff waits on the high item: AD-5 requires the after-commit send to stay in the order's trace, and the only mechanism it allows does not do that on this outbox path.
+AD-8 and AD-11 agree with each other. The inventory module records `sale.attempts` (`result`) and `sale.statements` (`kind`) on the one `MeterRegistry`, the request total is the sum of attempts, and the log is no longer the tally. One scrape-name gap remains between that instrument and the Grafana panel. The spec, PRD, and telemetry epic still describe the log tally; that is source drift, not a reason to put the log back.
 
 ## Checklist
 
 | Check | Result |
 | --- | --- |
-| Fixes the real divergence points one level down and misses none | **Gap.** Module boundaries, the order payload, the sale log beside metrics, and the local collector topology are fixed. The request trace does not survive the outbox send under the rule as written. Export sampling and a down collector are still open. |
-| Every AD Rule is enforceable and actually prevents its stated divergence | **Gap.** AD-8 and AD-10 hold. AD-5's same-trace prevent does not. AD-11's destinations are right; the Prevent line and the Boot switches that turn export on are not. |
-| Nothing under Deferred could let two units diverge | **Pass.** Each item leaves the behavior fixed and names when to revisit. |
-| Named tech is verified-current | **Pass.** Checked 2026-10-09 against the current releases, not only the memlog. |
-| Brownfield: ratify, do not contradict the codebase | **Pass.** The update extends the existing Modulith outbox, the console totals, and the localhost Compose ports. |
-| Covers the spec capabilities | **Pass.** CAP-1 through CAP-8 stay on AD-1 through AD-9. The sale totals log remains the CAP-7 tally. |
-| Parent spine inherited without a local AD weakening it | **Pass.** This is the initiative spine. No parent. The amendments do not loosen the order JSON, the outbox commit, or the sale log. |
-| Every dimension this altitude owns is decided, deferred, or an open question | **Pass.** Deployment, infra, and local observability are decided. Process supervision, health, alerting, and a hosted environment are deferred with a revisit condition. The sampling and export-failure gaps sit inside AD-11; they are not a silent dimension. |
+| Fixes the real divergence points one level down and misses none | **Gap.** The two counters, the closed `result` and `kind` sets, one increment per admit, success only after commit, and "the log does not print running totals" close the tally split. The Prometheus series the dashboard queries is not pinned, so a dashboard story and a collector story can still miss each other. |
+| Every AD Rule is enforceable and actually prevents its stated divergence | **Gap.** AD-8 holds. AD-11 prevents a second registry, a custom totals-log interval, the HTTP timer as the tally, and a collector failure changing the shopper outcome. Its dashboard sentence names `sale.attempts`, which the default Prometheus export does not scrape. |
+| Nothing under Deferred could let two units diverge | **Pass.** Exemplars are optional metadata on the same counters. The other items leave the shared behavior fixed and name when to revisit. The totals-log wording deferral is gone, which matches the new rule. |
+| Named tech is verified-current | **Pass.** Rechecked 2026-10-12. The appender pin is the line that fits Boot's OpenTelemetry, not the newer line that requires API 1.66.0. |
+| Brownfield: ratify, do not contradict the codebase | **Pass.** `SaleTotals` still logs running totals. AD-8 forbids those lines. That lag is expected and is not a contradiction to fix by restoring the log tally. The OTLP URLs, sampling, appender coordinate, and outbox observability module already match the spine. |
+| Covers the spec capabilities | **Source drift.** CAP-1 through CAP-6 and CAP-8 are unchanged. CAP-7's "totals are visible" is met by the counters and the Grafana dashboard. The spec constraint, the spec success signal, PRD §6.1 and §7, and TEL-3 still say the log is the tally and that a metrics view must not replace it. Do not revert the spine to match them. |
+| Parent spine inherited without a local AD weakening it | **Pass.** This is the initiative spine. No parent. The amendments do not loosen the outbox commit, the module direction, or the customer-limit guards. |
+| Every dimension this altitude owns is decided, deferred, or an open question | **Pass.** Deployment, infra, and local observability stay decided. Process supervision, health, alerting, and a hosted environment stay deferred with a revisit condition. |
 
 ## Findings
 
-### 1. High — AD-5's KafkaTemplate switch does not keep the outbox send in the order's trace
+### 1. Medium — The dashboard names the Micrometer instrument, and Prometheus will not scrape that name
 
-AD-5 prevents a new root trace on the send. The rule says `spring.kafka.template.observation-enabled=true` makes the single `KafkaTemplate` write W3C `traceparent`, that application code must not add that header through a second producer, a producer interceptor, or `EventExternalizationConfiguration.headers`, and that the externalization thread propagates the request trace.
+AD-8 names the counters `sale.attempts` and `sale.statements`. AD-11 says Grafana's provisioned sale dashboard includes those names by `result` and `kind`, and that Grafana's datasource is Prometheus scraping the collector on `8889`.
 
-Spring Modulith 2.1.1's Namastack Kafka handler is `(payload, metadata) -> externalizer.externalizeBlocking(payload)`. The metadata map, which is where a stored `traceparent` would sit, is discarded. The transport then copies headers only from `EventExternalizationConfiguration.getHeadersFor(payload)`, the hook the rule forbids, and calls `KafkaOperations.send`. Observation writes `traceparent` from the span that is current on that call.
+The core image `otel/opentelemetry-collector:0.162.0` includes `prometheusexporter`. Its default translation is `UnderscoreEscapingWithSuffixes`. A dimensionless counter `sale.attempts` is scraped as `sale_attempts_total` with label `result`. `sale.statements` is scraped as `sale_statements_total` with label `kind`. Copying `sale.attempts` into the dashboard query returns no series.
 
-The brownfield send is not on the request thread. `Orders` publishes `OrderAccepted` inside the transaction. `spring.modulith.events.externalization.mode=outbox` records that event through Namastack, and a later poller sends it. `namastack-outbox-starter-jdbc` 1.7.3, which `spring-modulith-starter-namastack` 2.1.1 already pulls, does not depend on `namastack-outbox-observability`. That separate module, which exists at 1.7.3, is what stores the active W3C context on the outbox row and restores a child span around the handler. It is not in the stack and not on the classpath. Without it, the poller has no request span, and the mandated switch writes a new root `traceparent`.
+The exporter also accepts `translation_strategy` values that omit `_total` or keep the dotted name (`UnderscoreEscapingWithoutSuffixes`, `NoUTF8EscapingWithSuffixes`, `NoTranslation`). Prometheus 3 can ingest a UTF-8 name. One story can leave the default and query `sale_attempts_total`. Another can turn translation off and query `sale.attempts`. Both can claim they followed AD-11. The HTTP-timer prevent does not stop that split.
 
-Two telemetry stories can still diverge: one sets only `observation-enabled` and ships a new trace; another adds `namastack-outbox-observability` 1.7.3 so the handler runs inside the restored span and the same template writes that trace. The rule forbids both the new root and the header hooks that could copy a stored `traceparent`. Disposition: **discuss**. Continuing the trace means requiring the observability module so the existing `KafkaTemplate` send sees the restored span, or allowing a header taken from the stored context. Those are different mechanisms.
+SM-1 is a total since process start, which is the cumulative counter. A panel that only draws `rate()` is a different number. Disposition: **autofix**. Keep the Micrometer names. State that the collector leaves Prometheus translation at the default, and that the dashboard queries `sale_attempts_total` by `result` and `sale_statements_total` by `kind` as cumulative totals. Leave OTLP aggregation temporality at the Boot cumulative default so the scrape stays a counter.
 
-### 2. Medium — AD-11 names the URLs and leaves Boot's export switches off
+### 2. Source drift — The spec, the PRD, and TEL-3 still say the log is the tally
 
-AD-11 prevents a second exporter beside Micrometer, and a protocol other than OTLP. The rule says Micrometer exports metrics to `http://localhost:4318/v1/metrics` and traces to `http://localhost:4318/v1/traces`, and that `opentelemetry-logback-appender-1.0` `2.32.0-alpha` exports logs to `http://localhost:4318/v1/logs` after `OpenTelemetryAppender.install` on the Boot `OpenTelemetry` bean.
+Do not revert AD-8 or AD-11. The spine's own sentences agree: the counters are the tally, and the application log does not print running request, success, query, or update totals.
 
-Spring Boot 4.1.1 splits those pipes:
+These sources still describe the old channel:
 
-- `micrometer-registry-otlp`, already inside `spring-boot-starter-opentelemetry`, exports metrics. The URL property is `management.otlp.metrics.export.url`. The registry does not export traces.
-- Traces leave through the starter's `OtlpHttpSpanExporter` only after `management.opentelemetry.tracing.export.otlp.endpoint` is set. HTTP is the default transport.
-- The logback appender does not open HTTP. It writes into the Boot `OpenTelemetry` bean. Boot does not configure log export until `management.opentelemetry.logging.export.otlp.endpoint` is set. `OpenTelemetryAppender.install` matches the Boot 4.1 logger docs, and `2.32.0-alpha` is the current Maven Central line (there is no stable line).
+- Spec constraint: request totals and database query and update totals are visible in the service log, and a metrics endpoint does not replace that log.
+- Spec success signal: the log shows the request total and the database query and update totals for that sale.
+- PRD §6.1 and §7: logging is how the request total and the query and update counts are visible.
+- TEL-3, and the epic decision under it: the sale totals log still shows requests, queries, and updates, and a metrics view does not replace that log.
 
-The sampler default is `parent-based-trace-id-ratio` with `management.tracing.sampling.probability=0.1`, and unsampled spans are not exported. One story can leave that default. Another can set probability `1` or `always-on`. The collector then sometimes has this order's trace and sometimes does not. TEL-4's "a person can read that order's trace" follows the second choice.
-
-The Prevent line also fights the Rule. Logs are required to go through the OpenTelemetry appender, which is the second exporter TEL-4 asks for, and traces go through the OTel span exporter, not the Micrometer metrics registry. A reader who obeys the Prevent drops the log export. Disposition: **autofix**. Name the metrics URL, the tracing endpoint, and the logging endpoint, all OTLP over HTTP. For this one local environment, sample every trace. Rewrite the Prevent so it keeps one metrics registry, one trace exporter, and one log appender, and still bars a second protocol, an agent, and a metrics view in place of the sale log.
-
-### 3. Medium — A down collector can still change the shopper outcome
-
-AD-1 already says the Kafka send is after the outcome returns, and a broker delay does not change that outcome. AD-11 puts metrics, traces, and logs on the same host process and does not say where export sits relative to that transaction.
-
-A telemetry story can export inside the AD-1 transaction, block the page on the collector, or fail the order when `localhost:4318` is down. The finished sale and this epic share the process. The sale totals lines can also disappear if a story treats a failed export as a failed request. Disposition: **autofix**. State that OTLP export runs outside the AD-1 transaction, and that collector delay or failure leaves the shopper outcome and the AD-8 console lines unchanged.
+CAP-7's intent, that the builder can see attempt counts and query and update counts, is what the counters and the dashboard carry. The log-channel sentences are the drift. Disposition: **source drift**. Update those sources in their own pass. The spine stays on the counters.
 
 ## Deferred
 
-None of these let two units pick incompatible behavior. The shared rule is already in an AD; only the number, the text, or the later environment is open.
+None of these let two units pick incompatible behavior. The shared rule is already in an AD. Only the number, the text, or the later environment is open.
 
-- Admission-gate concurrency number. Turn-away stays a page retry, not a shopper outcome.
-- Order-id character format. The id stays a unique opaque string, stored in the commit, and never reused.
+- Admission-gate concurrency number. Turn-away stays a retry signal, not a shopper outcome.
+- Order-id text format. The id stays unique, stored in the commit, and never reused.
 - Starting pool quantity. It lives only on the seeded item row.
-- Wording of the totals log line. The inventory module still owns the three totals, and AD-11 already fixes the `trace_id` and `span_id` labels.
+- Exemplars from a sale counter to a trace. The counters stay the tally either way. Revisit when Grafana shows traces.
 - HTTP path of the form. It stays inside the page module.
 - Process supervision, health checks, and alerting on an unpublished outbox row. Revisit when the process is no longer started by hand.
 - A hosted environment. Revisit when a launch target exists.
@@ -74,21 +66,22 @@ None of these let two units pick incompatible behavior. The shared rule is alrea
 
 ## What holds
 
-AD-8 keeps the inventory log as the sale tally. Micrometer and the OpenTelemetry log export may sit beside `requests`, `queries`, and `updates`. They do not replace those lines. That matches the spec constraint, CAP-7, and `SaleTotals`, which already writes those totals from the inventory module only.
+AD-8 is enforceable on the tally itself. Inventory alone increments the two counters on the single `MeterRegistry`. `result` is the closed set `in_process`, `wait`, `refused`, `sold_out`, `not_accepted`, `turned_away`. One `admit` increments `sale.attempts` once, a page open does not, and the request total is the sum. `in_process` is the success, and that increment is only after the order transaction commits, which matches `Orders.place` returning from its transaction before `Admission.admit` records the outcome. `sale.statements` counts inventory JDBC and outbox-publisher statements, including zero-row changes. `SELECT` is `query`. `INSERT`, `UPDATE`, and `DELETE` are `update`. The counters live in the one process, reset on restart, and do not make a sale successful. A user id or an order id is not a sale-meter attribute. The HTTP server timer and JDBC auto-metrics are not the tally.
 
-AD-10 adds `otel/opentelemetry-collector:0.162.0`, `prom/prometheus:v3.15.0`, and `grafana/grafana:13.2.3` to the existing host-plus-Compose layout. The Boot process stays on the host and uses localhost. Compose services call each other by service name. The current `compose.yaml` already publishes PostgreSQL `localhost:5432` (`flashsale` / `flashsale` / `flashsale`) and Kafka `localhost:9092`, and creates `inventory.order-accepted`. The core collector image at 0.162.0 includes the Prometheus exporter, so port 8889 is a real scrape target, and the debug exporter is in that same image.
+The running-total log is forbidden in both AD-8 and AD-11, including the interval line. That removes the old deferral about totals-log wording. Trace correlation stays on the request span, the console `trace_id` and `span_id` labels, and the Kafka `traceparent` header.
 
-AD-11's shape is right where it is specific: three OTLP HTTP paths, the console appender kept, Micrometer MDC keys `traceId` and `spanId` printed as `trace_id` and `span_id`, Grafana reading Prometheus only, and Tempo and Loki left out. The order event's four JSON properties and message key are unchanged. `traceparent` is a Kafka header, not a JSON property.
+`SaleTotals` still logs `requests={} queries={} updates={}` and `requests={} successes={}`, and `flashsale.sale-totals.interval-ms` is still set. That is the code lag behind the new rule. It is not a brownfield contradiction, and it is not fixed by putting the log tally back into the spine.
 
-CAP-1 through CAP-8 remain covered by AD-1 through AD-9. There is no parent spine. The new sentences do not weaken the outbox commit, the module direction, or the customer-limit guards.
+AD-1 through AD-7, AD-9, and AD-10 are unchanged in force. AD-5 names `namastack-outbox-observability` `1.7.3`, which is already on the classpath, as the way the after-commit send stays on the order's trace. AD-11 names the three OTLP HTTP endpoints, samples every trace in this local environment, and says a down collector does not change the shopper outcome or whether the order event is sent.
 
-## Versions checked 2026-10-09
+## Versions checked 2026-10-12
 
 | Pin | Check |
 | --- | --- |
-| `otel/opentelemetry-collector:0.162.0` | Current stable collector image. `0.163` is nightly. The core manifest includes the Prometheus exporter and the debug exporter. |
-| Prometheus `3.15.0` / `prom/prometheus:v3.15.0` | Latest release, 2026-09-24. |
-| Grafana `13.2.3` / `grafana/grafana:13.2.3` | Stable release, 2026-09-29. |
-| `opentelemetry-logback-appender-1.0` `2.32.0-alpha` | Current Maven Central version. No non-alpha line. |
-| `spring-boot-starter-opentelemetry` on Boot 4.1.1 | Published. It brings `micrometer-registry-otlp` and the OTLP span exporter. |
-| Existing pins (Boot 4.1.1, Modulith 2.1.1, Namastack JDBC 1.7.3, PostgreSQL 18.6, Kafka 4.3.1, Java 17) | Still the brownfield coordinates. `namastack-outbox-observability` 1.7.3 is on Maven Central and is not pulled by the JDBC starter. |
+| `opentelemetry-logback-appender-1.0` `2.26.0-alpha` | POM depends on OpenTelemetry API `1.60.1`. Matches the spine and `build.gradle`. |
+| `opentelemetry-logback-appender-1.0` `2.32.0-alpha` | Current instrumentation line (2026-10-04). POM depends on OpenTelemetry API `1.66.0`. Correctly not used. Boot 4.1.1 manages `1.62.0`. |
+| Spring Boot `4.1.1` OpenTelemetry | `spring-boot-dependencies` and `spring-boot-starter-opentelemetry` manage `io.opentelemetry` `1.62.0` and bring `micrometer-registry-otlp` `1.17.1`. |
+| `otel/opentelemetry-collector:0.162.0` | Core distro manifest includes `prometheusexporter` and `debugexporter`. Install docs still pull this tag. Default Prometheus translation is `UnderscoreEscapingWithSuffixes`. |
+| Prometheus `3.15.0` / `prom/prometheus:v3.15.0` | Latest release on prometheus.io, 2026-09-24. |
+| Grafana `13.2.3` / `grafana/grafana:13.2.3` | Latest stable on the Grafana download page, 2026-09-29. |
+| Existing pins (Boot 4.1.1, Modulith 2.1.1, Namastack 1.7.3, PostgreSQL 18.6, Kafka 4.3.1, Java 17, Flyway 12.4.0) | Still the brownfield coordinates. |

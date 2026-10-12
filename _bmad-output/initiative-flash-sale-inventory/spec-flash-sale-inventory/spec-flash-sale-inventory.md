@@ -58,7 +58,7 @@ A limited item draws more people than there are units, often enough to need one 
 - Units go to the earliest successful orders.
 - Order processing continues from the order event and does not decide whether the inventory pool allows another order.
 - The service handles a high volume of order attempts, including contention for the shared pool.
-- Request totals and database query and update totals are visible in the service log. A metrics endpoint does not replace that log.
+- Request totals and database query and update totals are the counters `sale.attempts` and `sale.statements`.
 - Consistency of the page, the inventory decision, publication, and the local runtime is governed by the architecture spine.
 
 ## Non-goals
@@ -72,4 +72,4 @@ A limited item draws more people than there are units, often enough to need one 
 
 ## Success signal
 
-On the local service, a sale shows orders succeeding only while the inventory pool is above zero, no unit deducted for more than one customer, and no customer past the customer limit. The shopper sees in process, wait one hour, sold out, refused, or not accepted according to CAP-1 through CAP-8. Each order event carries the units deducted. The log shows the request total and the database query and update totals for that sale.
+On the local service, a sale shows orders succeeding only while the inventory pool is above zero, no unit deducted for more than one customer, and no customer past the customer limit. The shopper sees in process, wait one hour, sold out, refused, or not accepted according to CAP-1 through CAP-8. Each order event carries the units deducted. `sale.attempts` and `sale.statements` show the request total and the database query and update totals for that sale.

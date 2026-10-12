@@ -125,9 +125,9 @@ Zero rows means the units were no longer there. The transaction rolls back, incl
 
 **Outbox and latency.** The order event is inserted in the same transaction as the deduction. The page already has "The order is in process" when `place` returns. Kafka is sent after commit by the outbox publisher, which polls on a short fixed interval, on the order of a couple of seconds. A broker delay does not change the shopper sentence. A failed send leaves the outbox row, and the publisher retries. The shopper-visible latency is the database transaction plus admission wait, not the Kafka round trip.
 
-**Database pressure.** The bound caps concurrent inventory transactions, and each of those holds the item row only for the decision and the update. Connections beyond the bound never open a transaction for that attempt. The publisher keeps polling, so query and update counts in the log move even when nobody is ordering. Flyway and test SQL are not counted in those totals.
+**Database pressure.** The bound caps concurrent inventory transactions, and each of those holds the item row only for the decision and the update. Connections beyond the bound never open a transaction for that attempt. The publisher keeps polling, so `sale.statements` moves even when nobody is ordering. Flyway and test SQL are not counted in those totals.
 
-**What the log is for.** Inventory logs `requests=N queries=N updates=N`. Every attempt that reaches inventory counts, including a turn-away. Opening the form does not. The counts reset when the process restarts. They are not success by themselves: a sale is a success only when no deducted unit was unavailable and no customer passed 3.
+**What the counters are for.** Inventory records `sale.attempts` and `sale.statements`. Every attempt that reaches inventory counts, including a turn-away. Opening the form does not. The counts reset when the process restarts. They are not success by themselves: a sale is a success only when no deducted unit was unavailable and no customer passed 3.
 
 **What this setup does not cover.** One process on one host. No second JVM, no hosted environment, no restock, and no production choice for the admission number. Two processes would split the sold-out hint and the admission bound while sharing one database.
 
@@ -148,7 +148,7 @@ The tests use that same PostgreSQL and Kafka. Compose needs to be up.
 
 ## Follow one order
 
-Place one successful order and read the same trace id in three places. Grafana shows the HTTP request count for that run.
+Place one successful order and read the same trace id in three places. Grafana shows the sale counters and the HTTP request count for that run.
 
 Start this before you submit. It waits for the next order event. `traceparent` begins with `00-` and the same trace id. The span id in that header is a child of the console span, so the two span ids differ. The JSON body is still `orderId`, `userId`, `itemId`, and `unitsDeducted`.
 
@@ -156,7 +156,7 @@ Start this before you submit. It waits for the next order event. `traceparent` b
 docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:19092 --topic inventory.order-accepted --partition 0 --offset latest --max-messages 1 --formatter-property print.headers=true --formatter-property print.key=true
 ```
 
-Submit a user id and a quantity at `http://localhost:8080/`. The shopper sentence is "The order is in process". The console line for that order includes `trace_id`, `span_id`, and the sale totals `requests`, `queries`, and `updates`.
+Submit a user id and a quantity at `http://localhost:8080/`. The shopper sentence is "The order is in process". The console line for that order includes `trace_id` and `span_id`.
 
 Wait a few seconds after the page returns. The order span is exported in a batch, so it is not in the collector log the instant the page comes back. Then the collector log prints that trace id on the span named `http post /`:
 
@@ -166,4 +166,4 @@ docker compose logs otel-collector
 
 Spans named `task outboxProcessingScheduler.process` are the publisher poll. They are not the order.
 
-Open `http://localhost:3000/`. The Orders dashboard is already there. Its HTTP server requests number counts requests, including this order. The number can take about a minute to move. It is not a separate series for one trace id.
+Open `http://localhost:3000/`. The Orders dashboard is already there. Sale attempts reads `sum(sale_attempts_total)`. Sale statements reads `sum by (kind) (sale_statements_total)`. The HTTP server requests panel stays under its own title and is not that tally. Those numbers can take about a minute to move. They are not a separate series for one trace id.

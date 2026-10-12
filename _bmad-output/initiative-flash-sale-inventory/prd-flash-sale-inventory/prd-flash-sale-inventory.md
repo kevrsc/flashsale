@@ -138,12 +138,12 @@ When the customer is not in the one-hour wait, the inventory pool holds at least
 
 ## 6. MVP Scope
 
-The hobby version is the full behavior in §4 and the logging in §7. Nothing in §4 is deferred.
+The hobby version is the full behavior in §4 and the counters `sale.attempts` and `sale.statements` in §7. Nothing in §4 is deferred.
 
 ### 6.1 In Scope
 
 - The behavior in §4, including recognition by user ID.
-- Logging that shows the total number of requests, and how many database queries and updates occurred.
+- The counters `sale.attempts` and `sale.statements` show the total number of requests, and how many database queries and updates occurred.
 
 ### 6.2 Out of Scope for MVP
 
@@ -151,7 +151,7 @@ The hobby version is the full behavior in §4 and the logging in §7. Nothing in
 
 ## 7. Success Metrics
 
-The builder can see traffic and resource usage. Logging is how those counts are visible.
+The builder can see traffic and resource usage. The counters `sale.attempts` and `sale.statements` are how those counts are visible.
 
 **Primary**
 - **SM-1**: Total number of requests during a sale. Validates the high-volume behavior on Place an order.

@@ -1,105 +1,124 @@
 # Adversarial review — architecture spine
 
-Spine reviewed, not edited: `architecture-flash-sale-inventory.md` (updated 2026-10-09).
+Spine reviewed, not edited: `architecture-flash-sale-inventory.md` (updated 2026-10-12).
 
-Method: for each candidate hole, build two units one level down that each obey every current AD and Deferred entry to the letter, and show they still cannot be dropped into one system. Pairs are the page module and the inventory module, the inventory module and the order service, or the host process and the Compose services where an AD already splits that ownership. A Deferred line that still lets the pair diverge is a hole. A Deferred line that only one unit can see is not.
+Method: for each candidate hole, build two units one level down that each obey every current AD and Deferred entry to the letter, and show they still cannot be dropped into one system. Pairs are the inventory module and the Grafana dashboard, two inventory builds, the page module and the inventory module, or the host process and the collector. A Deferred line that still lets the pair diverge is a hole.
 
-The 2026-10-09 text closes the earlier mutation, schema, event-body, and host-port holes (missed conditional update rolls back; customer-then-item lock covers reads; unique user id; exact four-field JSON; page does not embed an item id; shopper outcomes are the five names; one Boot process; localhost ports, database, user, and password). The holes below are the ones that text still allows.
+The 2026-10-12 text closes the earlier sale-log tally. The counters are Micrometer, the token characters are a closed set, a success may not increment before commit, `SELECT` is `query`, `INSERT` / `UPDATE` / `DELETE` is `update`, zero-row changes count, a page open does not, and the HTTP server request timer is named as not the tally. Those sentences hold. The holes below are the ones that text still allows, centered on `sale.attempts` and `sale.statements`.
 
-**Verdict: fail.** An inventory module can follow every AD and still hand the page a different first-order outcome, or a customer total the limit of 3 does not survive. The same module can follow AD-5's allowed Kafka path and still put a new trace on `inventory.order-accepted` while the console shows the request trace. A Compose file and a Grafana/Prometheus config can each follow AD-10 and AD-11 and still point at different hosts and different metrics.
+**Verdict: fail.** Two inventories can each follow AD-8 and still report a different request total for the same form post, because `admit` is not defined and only `in_process` is tied to an outcome. A Grafana dashboard can follow AD-11 and still query a different series than the counter inventory registered, including the HTTP timer's count.
 
 ## Findings
 
-### 1. The new customer row and the success write do not define one limit
+### 1. The result tokens are not a map, and `admit` does not say which calls count
 
 - **Severity:** critical
 - **Disposition:** autofix
-- **Pair:** two inventory builds; the page renders the outcome and the order service fulfills `unitsDeducted`
-- **Location:** AD-3, AD-6, AD-9
-- **trigger_condition:** AD-6 says the row stores units successfully ordered and the earliest next-allowed time, and that an insert happens when no row exists. It does not say what that insert stores. AD-3 reads those columns under the customer lock and treats "units left" as given. AD-6 says a successful order "writes the units" and does not say it adds `unitsDeducted` to the stored total.
-- **Construction:** Flyway A creates `units integer not null default 0` and `next_allowed timestamptz null`. The insert names only the user id. The first read sees zero units and a next-allowed time that is not in the future, so the order deducts. On success the SQL adds `unitsDeducted` and sets next-allowed to PostgreSQL's clock plus one hour. Flyway B uses the same unique user-id key and `next_allowed timestamptz not null default now() + interval '1 hour'`, because the row "stores the earliest time they may order again" from the moment it exists. The insert still names only the user id. AD-3 then sees a next-allowed time in the future, returns wait one hour, changes no pool, and writes no outbox row. The page shows wait. A third build stores the success by assigning `units = unitsDeducted`. After an order of 1, the locked row still reads as 1 on every later order, units left stay at 2, and the customer takes one unit per hour without bound. Each build uses JDBC, the unique key, the customer-then-item lock, and a conditional pool update.
-- **guard_snippet:** Tighten AD-6 and AD-3. The insert stores zero successful units and a null next-allowed time. Null is not in the future. Units left are `3` minus the locked successful-units value. On success, add `unitsDeducted` to that value and set next-allowed to PostgreSQL's clock plus one hour. Wait, refusal, sold out, and not accepted do not change either column.
-- **potential_consequence:** A first-time shopper is told to wait an hour, and no order event is sent, while the seeded pool is untouched. Or one user id stays under the stored limit of 3 and keeps deducting, and the order service fulfills every event.
+- **Pair:** two inventory builds; Grafana sums `sale.attempts` for both
+- **Location:** AD-4, AD-6, AD-7, AD-8
+- **trigger_condition:** AD-8 lists `in_process`, `wait`, `refused`, `sold_out`, `not_accepted`, and `turned_away`, and says one `admit` increments `sale.attempts` once. The only mapping it states is that a success is `result=in_process`. AD-7's outcomes are the different strings "in process", "wait one hour", "sold out", "refused", and "not accepted". AD-4's turn-away is not one of those five. `admit` is not a method, a permit, or a form post anywhere else in the spine. AD-6's "admitted transaction" is a different boundary: it starts after the gate and after a blank user id has already been rejected.
+- **Construction:** Inventory A treats `admit` as every call the page makes, including the AD-4 retry loop. Each call increments once. Turn-away writes `turned_away` and opens no transaction. Blank and non-positive write `not_accepted` before a transaction. Wait, refused, and sold out write `wait`, `refused`, and `sold_out`. A success writes `in_process` only after commit. Five gate rejections and then a committed order produce six attempts. Inventory B treats `admit` as AD-6's admitted transaction, the call that acquired the permit. Turn-away and the blank-user rejection happen before that, so they do not increment. The same shopper produces one `in_process`. B still uses only the closed token set, still increments a success only after commit, and still leaves the page open uncounted. A third inventory uses the same admit boundary as A but writes the wait outcome as `not_accepted` and the not-accepted outcome as `refused`. Both tokens are in the set, and AD-8 never assigns them. Grafana grouping by `result` is a different sale for each build.
+- **guard_snippet:** In AD-8, map each outcome to one token: in process → `in_process`, wait one hour → `wait`, refused → `refused`, sold out → `sold_out`, not accepted → `not_accepted`, and an AD-4 turn-away → `turned_away`. `admit` is one call from the page into inventory, including each retry, a turn-away, a sold-out hint, and a not-accepted rejection before a transaction. That call increments `sale.attempts` exactly once, with that token. No other call increments it. The success increment is the `in_process` one, and it is still the only one that waits for commit.
+- **potential_consequence:** SM-1 for one sale is either the form posts, the gate retries, or only the committed orders. A wait can be graphed as not accepted. The page can show "in process" while Grafana's `in_process` series has not moved, or the reverse.
 
-### 2. The allowed Kafka send starts a new trace
-
-- **Severity:** high
-- **Disposition:** discuss
-- **Pair:** inventory module and the order service; the console log is the other reader of the same order
-- **Location:** AD-1, AD-5, AD-11, stack table
-- **trigger_condition:** AD-5 requires a W3C `traceparent` text header written only by `KafkaTemplate` observation (`spring.kafka.template.observation-enabled=true`), forbids a second producer, a producer interceptor, and `EventExternalizationConfiguration.headers`, and requires the send to stay in the order-request trace. Modulith 2.1.1's Namastack handler is `(payload, metadata) -> externalizer.externalizeBlocking(payload)`. It drops `metadata` and calls `KafkaTemplate` on the outbox worker. `namastack-outbox-starter-jdbc` 1.7.3 does not bring a tracing module. Observation on a thread with no parent writes a new root `traceparent`.
-- **Construction:** Inventory A uses the stack table, externalization mode `outbox`, and observation enabled. It does not add an interceptor or `headers()`. The worker's `traceparent` is a new trace. The console line for that order prints the request's Micrometer `traceId`. Inventory B adds `namastack-outbox-observability` so the worker restores the captured context before `KafkaTemplate.send`, and still lets the template write the header. The order service continues whichever `traceparent` arrives. The two records do not join the same console trace. B is the only one that meets the same-trace sentence, and it uses a library the spine never binds. A meets every named mechanism and fails the same-trace sentence.
-- **guard_snippet:** Decide one propagation path and bind it. Keep the template as the only header writer. Either add `namastack-outbox-observability` 1.7.3 and require that it restore the request context on the handler thread before `KafkaOperations.send`, or name a single other restore that is not a second producer. Drop the same-trace sentence until that path is checked against `externalizeBlocking`. A new root remains forbidden once a path is chosen.
-- **potential_consequence:** The collector shows the order on a trace that is not the shopper's request. The order service continues that other trace. AD-11's debug view and the console `trace_id` do not name the same order.
-
-### 3. Grafana and Prometheus have no legal address
+### 2. A success may be counted at any later moment after commit
 
 - **Severity:** high
 - **Disposition:** autofix
-- **Pair:** Compose services (collector, Prometheus, Grafana); the host Boot process is a third client of the published ports
-- **Location:** AD-10, AD-11, Structural Seed
-- **trigger_condition:** AD-10 gives host addresses (`localhost:4318`, `localhost:9090`, `localhost:3000`) and says Compose services call each other by service name. It never assigns those names. AD-11 says Grafana's datasource is Prometheus and Prometheus scrapes the collector on port 8889, with no URL.
-- **Construction:** Compose file A names the services `otel-collector`, `prometheus`, and `grafana`, publishes the host ports in AD-10, and sets the Grafana datasource to `http://prometheus:9090` and the scrape target to `otel-collector:8889`. Compose file B names them `collector`, `prom`, and `grafana` and uses `http://prom:9090` and `collector:8889`. Both use service names between containers and leave the Boot process on localhost. A third config sets the datasource to `http://localhost:9090` because that is the only Prometheus address written in AD-10. Inside the Grafana container that host is Grafana. None of the three can be rejected for using a name the spine forbade, because the spine never chose one.
-- **guard_snippet:** Pin the service names and the in-network URLs in AD-10. Grafana's datasource is `http://prometheus:9090`. Prometheus scrapes `otel-collector:8889`. The Boot process keeps the localhost URLs. `localhost` inside a Compose container is that container.
-- **potential_consequence:** The app exports OTLP to the host port and Grafana stays empty, or Prometheus scrapes itself. Two Compose files that both match the image tags never form one telemetry path.
+- **Pair:** inventory module and Grafana; the page is the other reader of the same order
+- **Location:** AD-1, AD-5, AD-8
+- **trigger_condition:** AD-8 says the `in_process` increment happens only after the order transaction has committed. It does not say it happens before the outcome returns to the page, or before the Kafka send. AD-1 returns the outcome after commit and sends only after that return. The send is at-least-once.
+- **Construction:** Inventory A increments `result=in_process` on the request thread after commit returns and before it returns the shopper outcome. One commit, one increment. Inventory B increments `result=in_process` once, when the outbox publisher's send first completes, which is also after commit and still one increment for that admit. The page has already rendered in process. Until the publisher drains, Grafana's success total is behind the pages B has shown and behind A's counter. A process that dies with a committed outbox row leaves B short until a later send, and a publisher that incremented on every at-least-once attempt would count one order twice. The second of those is forbidden only if "one admit increments once" is read as exactly once; the lag is allowed either way.
+- **guard_snippet:** The `in_process` increment happens after the AD-1 commit returns and before the shopper outcome is returned to the page. It does not wait for the Kafka send. A later send, including a retry, does not increment `sale.attempts`.
+- **potential_consequence:** During the sale, Grafana's success count and the pages already shown are not the same number. A broker delay, which AD-1 says must not change the shopper outcome, still changes SM-1.
 
-### 4. Port 8889 and the debug exporter do not identify the order
-
-- **Severity:** high
-- **Disposition:** autofix
-- **Pair:** collector config and Prometheus/Grafana; a person reading the collector log is the trace consumer AD-11 names
-- **Location:** AD-11, Deferred "Tempo, Loki, and a hosted log aggregator"
-- **trigger_condition:** AD-11 says the collector exposes metrics on 8889 for Prometheus to scrape, and writes traces and logs to its debug exporter so a person can read the order's trace. Collector 0.162.0's debug exporter defaults to `verbosity: basic`, which logs a span count and not a trace id. Port 8889 is also a legal port for the collector's own process metrics. The Deferred line treats that debug exporter as the trace and log view.
-- **Construction:** Collector A puts the Prometheus exporter of the OTLP metrics pipeline on `0.0.0.0:8889` and sets `debug.verbosity: detailed`. Collector B serves the collector's own telemetry on 8889 and leaves `debug` at the default. Prometheus scrapes port 8889 in both. Grafana shows application metrics for A and `otelcol_*` series for B. A's log contains the order's trace id. B's log contains a line with a span count. Both configs receive three OTLP signals, expose 8889, and name the debug exporter. Tempo and Loki stay absent.
-- **guard_snippet:** Tighten AD-11. The metrics pipeline is OTLP to the Prometheus exporter on `0.0.0.0:8889`, and that exporter is what Prometheus scrapes. The collector's internal telemetry stays off that port. Traces and logs go to the debug exporter with `verbosity: detailed`.
-- **potential_consequence:** Grafana never shows the order's metrics, or the only trace view has no trace id. The Deferred "read it from the debug exporter" path does not hold for a config that uses the exporter's default.
-
-### 5. Micrometer, the span exporter, and the MDC keys are different contracts
+### 3. Grafana and inventory can choose different meter names
 
 - **Severity:** high
 - **Disposition:** autofix
-- **Pair:** host Boot process and the collector; the console pattern and the exported log are the two readers
-- **Location:** AD-8, AD-11, Consistency Conventions
-- **trigger_condition:** AD-11 says Micrometer exports metrics to `/v1/metrics` and traces to `/v1/traces`. On Boot 4.1.1, `micrometer-registry-otlp` exports metrics. Spans export only when `management.opentelemetry.tracing.export.otlp.endpoint` is set. Log records reach `/v1/logs` only when `management.opentelemetry.logging.export.otlp.endpoint` is set and `OpenTelemetryAppender.install` runs on the Boot `OpenTelemetry` bean. The console rule names Micrometer MDC keys `traceId` and `spanId` under the labels `trace_id` and `span_id`. The OpenTelemetry logback MDC appender, also named `OpenTelemetryAppender`, writes `trace_id` and `span_id` instead.
-- **Construction:** Process A sets `management.otlp.metrics.export.url` to `http://localhost:4318/v1/metrics` and the same style of property for traces, installs `opentelemetry-logback-appender-1.0`, and prints `trace_id=%X{trace_id}` because that is the label AD-11 requires. Metrics arrive. Traces do not. The console labels are empty, because Micrometer filled `traceId`. Process B sets `management.opentelemetry.tracing.export.otlp.endpoint` and `management.opentelemetry.logging.export.otlp.endpoint` to the AD-11 URLs, prints `trace_id=%X{traceId} span_id=%X{spanId}`, and keeps the sale totals on the console appender. The collector shows B's request trace and A's metrics only. Both processes use the starter, the OTLP HTTP URLs, and a console pattern whose labels are `trace_id` and `span_id`. The sale totals remain on the console in both, so AD-8's "Micrometer does not replace the log" still holds, and the trace next to those lines does not.
-- **guard_snippet:** In AD-11, Micrometer OTLP exports metrics via `management.otlp.metrics.export.url=http://localhost:4318/v1/metrics`. The OpenTelemetry span exporter uses `management.opentelemetry.tracing.export.otlp.endpoint=http://localhost:4318/v1/traces`. Logs use `management.opentelemetry.logging.export.otlp.endpoint=http://localhost:4318/v1/logs` plus `io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender.install` on the Boot bean. The console pattern reads `%X{traceId}` and `%X{spanId}` and does not read MDC keys `trace_id` or `span_id`. Do not add the logback MDC appender.
-- **potential_consequence:** One build's collector has no order trace and a console line whose `trace_id` label is empty. The other build correlates. AD-8's sale line cannot be tied to the order in the debug exporter for the first build.
+- **Pair:** inventory module and the Grafana dashboard; the collector config is the third writer of the name
+- **Location:** AD-8, AD-10, AD-11
+- **trigger_condition:** AD-8 names the Micrometer counters `sale.attempts` and `sale.statements`. AD-11 says the provisioned dashboard includes those names by `result` and by `kind`. It does not give the Prometheus series, and it does not set the collector's `translation_strategy`. With that field unset, collector 0.162.0's Prometheus exporter keeps the default suffix behavior: dots become underscores, and a counter gains `_total`. A dimensionless counter `sale.attempts` is scraped as `sale_attempts_total`. `NoTranslation` plus Prometheus's default underscore escaping yields `sale_attempts` with no `_total`. `NoUTF8EscapingWithSuffixes` can yield `sale.attempts_total`. The attribute key `result` survives; the instrument name does not.
+- **Construction:** Inventory registers `Counter.builder("sale.attempts").tag("result", "in_process")` and the same for `sale.statements` with `kind`. Collector file A leaves `translation_strategy` unset, so Prometheus stores `sale_attempts_total` and `sale_statements_total`. Dashboard A queries `sum by (result) (sale.attempts)` because that is the only name AD-11 writes. The panel is empty. Dashboard B queries `sum by (result) (sale_attempts_total)` and `sum by (kind) (sale_statements_total)`. Collector file B sets `translation_strategy: NoTranslation`, and dashboard B's `_total` query is the empty one. Each file uses the stack's images, scrapes `otel-collector:8889`, and includes the AD-8 names as the panel title or the PromQL. None of them can be rejected for a series the spine never chose.
+- **guard_snippet:** Pin the collector and the PromQL in AD-11. The metrics pipeline's Prometheus exporter sets `translation_strategy: UnderscoreEscapingWithSuffixes`. The sale counters have no base unit. Grafana's request panel is `sum by (result) (sale_attempts_total)`. The statements panel is `sum by (kind) (sale_statements_total)`. The Micrometer names stay `sale.attempts` and `sale.statements`. A query for the dotted name, or for either name without `_total`, is not the dashboard.
+- **potential_consequence:** The counters increment in the host process and Grafana shows no sale. Two Compose files that both match the image tags never form one dashboard query.
 
-### 6. Turn-away is a retry with no shared signal
+### 4. The HTTP count can still be the sale tally
+
+- **Severity:** high
+- **Disposition:** autofix
+- **Pair:** host Boot process and the Grafana dashboard; inventory's counter is the other instrument on the same registry
+- **Location:** AD-8, AD-11
+- **trigger_condition:** AD-11 says the HTTP server request timer is not the tally, and that the dashboard includes `sale.attempts`. Boot 4.1's timer is `http.server.requests` unless `management.observations.http.server.requests.name` changes it. That property is unset in the spine. The timer's base unit is milliseconds, so the same default exporter exposes `http_server_requests_milliseconds_count`, not a series named `http.server.requests`. AD-8 forbids an HTTP auto-metric standing in for the sale meters and does not reserve the counter names against a second instrument. Opening the page does not increment `sale.attempts`, but it does increment the timer. One form post is one timer sample and can be many `admit` calls.
+- **Construction:** Process A leaves the observation name at `http.server.requests` and registers the AD-8 counter. Dashboard A uses only `sum by (result) (sale_attempts_total)`. Process B sets `management.observations.http.server.requests.name=sale.attempts` and still registers the counter with tag `result`. Prometheus then has `sale_attempts_total{result=...}` and `sale_attempts_milliseconds_count` labeled with the HTTP tags, including `outcome`, not `result`. Dashboard B's sale row is `sum(sale_attempts_milliseconds_count)` plus a text panel that includes the words `sale.attempts` by `result`. The milliseconds series counts GETs of the form. The business counter does not. A third dashboard keeps the literal query `sum(http_server_requests_milliseconds_count)` as the request stat and adds an empty `sale.attempts` panel so the file still includes that name. B and the third file never graph a meter whose Micrometer name is the default timer name, which is the only HTTP instrument the rule names.
+- **guard_snippet:** Reserve the two names. `sale.attempts` and `sale.statements` are only the AD-8 counters. `management.observations.http.server.requests.name` stays `http.server.requests`. The sale dashboard's request query is `sum by (result) (sale_attempts_total)` and no other target. `http_server_requests_milliseconds_count` and `sale_attempts_milliseconds_count` are not SM-1.
+- **potential_consequence:** Grafana's request number includes page opens and excludes gate retries, or the reverse of the counter inventory recorded. Two instruments own the name `sale.attempts`.
+
+### 5. The log may still print totals
+
+- **Severity:** high
+- **Disposition:** autofix
+- **Pair:** inventory module and a person reading the console; the OpenTelemetry log export is the same events
+- **Location:** AD-8, AD-11
+- **trigger_condition:** AD-8 says the application log does not print running request, success, query, or update totals. AD-11 repeats that for the console and forbids a custom sale-totals log interval. The four nouns are the sum, the `in_process` total, and the two `kind` values. A per-attempt increment, a cumulative line for the other tokens, and a metrics-pipeline debug exporter are not those four nouns and are not an interval.
+- **Construction:** Process A increments the counters and logs only the shopper sentence, with the AD-11 trace pattern and no sale numbers. Process B, on each admit, logs `sale.attempts result=in_process 1` (the increment, not the sum) and logs `turned_away`, `wait`, `refused`, `sold_out`, and `not_accepted` as cumulative values. It never prints `requests`, `successes`, `queries`, or `updates`, and it has no scheduled interval. The console appender and `OpenTelemetryAppender` both carry those lines. A reader summing `1` rebuilds a request total that need not match Grafana when finding 1's two inventories differ. Collector file B also puts the debug exporter on the metrics pipeline, still exports `0.0.0.0:8889`, and the collector log prints the cumulative points. AD-11 sends traces and logs to the debug exporter; it does not say the metrics pipeline has only the Prometheus exporter.
+- **guard_snippet:** The application log, the console, and the exported log records do not print a sale counter name, a `result` or `kind` token together with a number, an increment, or a cumulative total. No schedule logs those numbers. The collector metrics pipeline's only exporter is the Prometheus exporter on `0.0.0.0:8889`.
+- **potential_consequence:** The console is again a second tally. It can count a different set of attempts than `sale.attempts`, and the collector log can show the running totals the amendment removed from the application.
+
+### 6. `sale.statements` has a floor and no ceiling
+
+- **Severity:** medium
+- **Disposition:** autofix
+- **Pair:** two inventory builds; Grafana reads `sale.statements` by `kind`
+- **Location:** AD-1, AD-8, AD-9
+- **trigger_condition:** AD-8 says every database statement from inventory JDBC and from the outbox publisher increments `sale.statements`, including a change of zero rows. It does not say "only those statements" or "exactly once". Flyway's startup SQL, a pool check, and Namastack's in-transaction outbox insert are not named. The insert is not application code (AD-1) and is not obviously the later publisher.
+- **Construction:** Inventory A wraps the inventory JDBC template and the publisher's client. Each of those statements increments once. `SELECT` is `query`. `INSERT`, `UPDATE`, and `DELETE` are `update`. Flyway and the in-transaction outbox insert go through the `DataSource` and do not increment. Inventory B wraps the shared `DataSource`. Every statement A counts still increments, and so do Flyway and the outbox insert inside the order transaction. A third wrapper increments in the repository and again in the pool decorator. Each named statement has incremented. A's `update` total for one committed order is short of B's by the outbox insert, and short of the third by a factor of two. All three reset on restart, live in the one process, and leave HTTP and JDBC auto-metrics off the dashboard.
+- **guard_snippet:** Each of these statements increments `sale.statements` exactly once: inventory's statements on the customer and item rows, Namastack's outbox insert inside the AD-1 transaction, and every later statement the outbox publisher runs. `SELECT` is `query`. `INSERT`, `UPDATE`, and `DELETE` are `update`. Flyway, pool validation, `BEGIN`, and `COMMIT` do not increment it. Nothing increments it twice.
+- **potential_consequence:** SM-2 for the same sale depends on which client was wrapped. A startup migration is graphed as sale updates. Two decorators double the query and update totals.
+
+### 7. Turn-away still has no shared return value
 
 - **Severity:** high
 - **Disposition:** autofix
 - **Pair:** page module and inventory module
-- **Location:** AD-4, AD-7, Deferred "Admission-gate concurrency number"
-- **trigger_condition:** AD-4 says the gate turns an attempt away with no transaction, the page does not render that turn-away, and the page retries with jitter until inventory returns an AD-7 shopper outcome. AD-7 says the page renders the returned outcome and does not replace it. The five outcomes do not include turn-away. The Deferred line says turn-away stays a retry signal and does not name the type.
-- **Construction:** Inventory returns an empty result and opens no transaction. The page retries only when inventory returns a dedicated `retry` value, treats empty as a missing outcome, and renders an error page. The other pairing has inventory throw, and the page retries on any throwable and treats an empty result as not accepted. The concurrency number can stay unset. Neither side renders the words "turn-away", and neither side returns one of the five names for that attempt.
-- **guard_snippet:** Name one in-process result. The shopper outcomes stay the AD-7 five. Turn-away is a separate result, not an exception and not one of the five. The page retries with jitter only when it receives that result, and renders a shopper outcome only when it receives one of the five.
-- **potential_consequence:** A gate rejection becomes an error page, a not-accepted page, or a retry loop that never matches. The admission bound can stay deferred and this clash remains.
+- **Location:** AD-4, AD-7, AD-8, Deferred "Admission-gate concurrency number"
+- **trigger_condition:** AD-4 turns an attempt away with no transaction, the page does not render that turn-away, and the page retries with jitter until inventory returns an AD-7 shopper outcome. AD-8's `turned_away` is a meter token, not the value of that call. The Deferred line says turn-away stays a retry signal and does not name the type. The five shopper outcomes still exclude it.
+- **Construction:** Inventory A returns a dedicated result that is not an exception and not one of the five, and increments `sale.attempts` with `turned_away` when finding 1's map is applied. The page retries only when it receives that result. Inventory B throws, opens no transaction, and can still increment `turned_away` before the throw. The page that matches the dedicated result renders an error page. The other page retries on any throwable and treats an empty return as not accepted. The concurrency number can stay unset. Neither page renders the words "turn-away", and neither inventory returns one of the five names for that attempt.
+- **guard_snippet:** Name one in-process result. The shopper outcomes stay the AD-7 five. Turn-away is a separate result, not an exception and not one of the five. The page retries with jitter only when it receives that result. That same result is the only call that increments `sale.attempts` with `turned_away`.
+- **potential_consequence:** A full gate becomes an error page, a not-accepted page, or a retry loop that never matches. The meter can count `turned_away` for an attempt the page does not retry.
 
-### 7. Not accepted and the sale tally are counted in different places
+### 8. Blank is not a test the two modules share
 
-- **Severity:** medium
+- **Severity:** high
 - **Disposition:** autofix
-- **Pair:** page module and inventory module; Grafana's HTTP metrics are the third counter
+- **Pair:** two inventory builds; the page renders the outcome and `sale.attempts` records it
 - **Location:** AD-6, AD-7, AD-8
-- **trigger_condition:** AD-7 says not accepted is the outcome for a non-positive quantity or a blank user id, and the page renders the outcome inventory returns. AD-6 rejects a blank user id before a transaction and does not say which module does it. A quantity that is not an integer is neither a non-positive quantity nor given an AD-7 name. AD-8 counts not accepted only when the attempt reaches inventory. Micrometer's HTTP metric counts the form post, including a page view's neighbors, and AD-8 says that metric is not the sale tally.
-- **Construction:** The page treats a blank user id and the text `abc` as not accepted and does not call inventory. The sale log does not move. Another page always calls inventory. Inventory counts both as requests and returns not accepted, and it throws on `abc` in a third build so the page has no AD-7 outcome to render. Grafana shows one HTTP request either way. All three leave the console totals as the named tally and leave Micrometer beside them.
-- **guard_snippet:** Inventory alone returns not accepted, before a transaction, for a blank user id or a quantity that is not a positive integer. That return counts as one request. The page does not decide it. Blank means empty or whitespace, still with no trim of a non-blank id. Micrometer HTTP metrics are not SM-1.
-- **potential_consequence:** The same form post is missing from the sale log, present on it, or shown as an error. Grafana's request series does not match the log for a run that also opened the page.
+- **trigger_condition:** AD-6 rejects a blank user id before a transaction, inserts no row, and uses not accepted. The same rule says user id compares with no trim and no case fold. It never says whether blank is empty or whitespace. AD-7 says not accepted is a non-positive quantity or a blank user id. AD-8 will record whichever outcome inventory returns, once finding 1 names the token.
+- **Construction:** Inventory A treats blank as length zero. The user id `" "` is not trimmed, is not blank, gets a customer row, and can commit. The counter gets `in_process` after that commit. Inventory B treats blank as no character other than whitespace. `" "` is rejected before a transaction, no row is inserted, the page shows not accepted, and the counter gets `not_accepted`. Neither build trims `" Bob "`, and both reject `""`. The same form post is a sale in one build and a rejection in the other.
+- **guard_snippet:** Blank means empty or whitespace only. Reject it before a transaction, insert no row, return not accepted, and increment `sale.attempts` with `not_accepted`. Do not trim or case-fold any other user id.
+- **potential_consequence:** One build stores a customer row for a space and deducts the pool. The other counts a not-accepted attempt and leaves the pool alone. Grafana's `in_process` and `not_accepted` series swap for that post.
 
 ## Deferred audit
 
 Holes (still let two units diverge):
 
-- Tempo, Loki, and the debug exporter as the trace view. The revisit condition is fine. The default debug exporter is not a readable trace. See finding 4.
-- Admission-gate concurrency number. The number can stay deferred. The retry signal cannot. See finding 6.
+- Admission-gate concurrency number. The number can stay deferred. The retry signal cannot. See finding 7.
+- The closed sale-totals log deferral. Dropping the four running totals still leaves increment lines, the other result tokens, and a metrics debug exporter. See finding 5.
 
 Not holes (only one unit can choose, and the revisit condition matches):
 
 - Order-id text format. The id stays a unique opaque string, stored in the commit, and the order service does not parse it.
 - Starting pool quantity. Only the seeded item row uses the number.
-- Wording of the totals log line. Inventory is the only writer until a scraper exists. Finding 7 is about which attempts are counted, not the words.
-- HTTP path of the form. Only the page module sees it.
-- Process supervision, health checks, and alerting on an unpublished outbox row. No second unit publishes.
+- Exemplars from a sale counter to a trace. No dashboard has a trace store to jump to. Tempo is still deferred.
+- HTTP path of the form. Only the page module sees it. Finding 4 is the metric on that request, not the path.
+- Process supervision, health checks, and alerting on an unpublished outbox row. No second unit publishes. Finding 2 is when the success counter moves, not an alert on the row.
 - A hosted environment. AD-10 already binds this build to one local topology.
+- Tempo, Loki, and a hosted log aggregator. Debug verbosity is `detailed`, and the console pattern's MDC keys are pinned. The metrics exporter on that pipeline is finding 5, not this deferral.
 - Restock, and clearing the sold-out hint. No second unit can raise the pool.
+
+## What held
+
+- The token characters themselves are closed. `in process`, `sold out`, `not accepted`, and `turned away` are not legal `result` values. `query` and `update` are the only `kind` values, and the three DML verbs are assigned.
+- A success must not increment before commit. The page-open request must not increment `sale.attempts`.
+- The counters are in-process Micrometer counters on the single registry, not a second `MeterRegistry`, not an OpenTelemetry `Meter`, and not a customer or order id tag.
+- The OTLP metrics URL and the one-minute export step are pinned. Tag `result` exports as attribute `result`.

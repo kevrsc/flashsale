@@ -1,70 +1,43 @@
 package com.flashsale.inventory;
 
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicLong;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import io.micrometer.core.instrument.MeterRegistry;
 
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 @Component
 class SaleTotals {
 
-	private static final Logger log = LoggerFactory.getLogger(SaleTotals.class);
+	private final MeterRegistry registry;
 
-	private final Object lock = new Object();
+	private final AtomicLong inventoryStatements = new AtomicLong();
 
-	private long requests;
-
-	private long successes;
-
-	private long queries;
-
-	private long updates;
+	SaleTotals(MeterRegistry registry) {
+		this.registry = registry;
+	}
 
 	void inventoryStatement(String sql) {
-		synchronized (lock) {
-			count(sql);
-		}
+		inventoryStatements.incrementAndGet();
+		statement(sql);
+	}
+
+	long inventoryStatementCount() {
+		return inventoryStatements.get();
 	}
 
 	void publisherStatement(String sql) {
-		synchronized (lock) {
-			count(sql);
-			write();
-		}
+		statement(sql);
 	}
 
-	void request(boolean succeeded) {
-		synchronized (lock) {
-			requests++;
-			if (succeeded) {
-				successes++;
-			}
-			write();
-		}
+	void request(String result) {
+		registry.counter("sale.attempts", "result", result).increment();
 	}
 
-	@Scheduled(fixedRateString = "${flashsale.sale-totals.interval-ms:60000}",
-			initialDelayString = "${flashsale.sale-totals.interval-ms:60000}")
-	void logInterval() {
-		synchronized (lock) {
-			log.info("requests={} successes={}", requests, successes);
-		}
-	}
-
-	private void count(String sql) {
-		if ("SELECT".equals(keyword(sql))) {
-			queries++;
-		}
-		else {
-			updates++;
-		}
-	}
-
-	private void write() {
-		log.info("requests={} queries={} updates={}", requests, queries, updates);
+	private void statement(String sql) {
+		String kind = "SELECT".equals(keyword(sql)) ? "query" : "update";
+		registry.counter("sale.statements", "kind", kind).increment();
 	}
 
 	private static String keyword(String sql) {

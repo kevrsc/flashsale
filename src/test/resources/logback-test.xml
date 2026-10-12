@@ -4,11 +4,6 @@
 			<pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
 		</encoder>
 	</appender>
-	<appender name="TOTALS" class="com.flashsale.TotalsLogCapture"/>
-	<logger name="com.flashsale.inventory.SaleTotals" level="INFO" additivity="false">
-		<appender-ref ref="TOTALS"/>
-		<appender-ref ref="CONSOLE"/>
-	</logger>
 	<root level="INFO">
 		<appender-ref ref="CONSOLE"/>
 	</root>
