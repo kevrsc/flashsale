@@ -166,4 +166,6 @@ docker compose logs otel-collector
 
 Spans named `task outboxProcessingScheduler.process` are the publisher poll. They are not the order.
 
-Open `http://localhost:3000/`. The Orders dashboard is already there. Sale attempts reads `sum(sale_attempts_total)`. Sale statements reads `sum by (kind) (sale_statements_total)`. The HTTP server requests panel stays under its own title and is not that tally. Those numbers can take about a minute to move. They are not a separate series for one trace id.
+Open `http://localhost:3000/`. The Orders dashboard is already there. Sale attempts lists every ending by name: In process, Wait one hour, Refused, Sold out, Not accepted, Turned away, and Unmatched. In process is a successful deduction. A zero means that ending has not happened since the process started. Sale statements reads `sum by (kind) (sale_statements_total)`. The HTTP server requests panel stays under its own title and is not that tally. Those numbers can take about a minute to move. They are not a separate series for one trace id.
+
+![Orders dashboard](docs/orders-dashboard.png)
