@@ -97,7 +97,7 @@ flowchart LR
 
 - **Binds:** the whole service
 - **Prevents:** two host processes, one configuration using Compose service names while another uses localhost, and a second deployed environment in this build
-- **Rule:** This spine has one environment and one Boot process on the host. Docker Compose runs `postgres:18.6`, `apache/kafka:4.3.1`, `otel/opentelemetry-collector:0.162.0`, `prom/prometheus:v3.15.0`, and `grafana/grafana:13.2.3`. PostgreSQL is `localhost:5432`, database `flashsale`, user `flashsale`, password `flashsale`. Kafka is advertised and reached at `localhost:9092`. Compose creates the topic `inventory.order-accepted` before the application publishes. The collector receives OTLP HTTP at `localhost:4318`. Prometheus is `localhost:9090`. Grafana is `localhost:3000`. Compose service names are `otel-collector`, `prometheus`, and `grafana`. Prometheus scrapes `otel-collector:8889`. Grafana's datasource is `http://prometheus:9090`. The Boot process uses the localhost addresses. Compose services call each other by those service names. `localhost` inside a Compose container is that container. Application configuration does not use Compose service names.
+- **Rule:** This spine has one environment and one Boot process on the host. Docker Compose runs `postgres:18.6`, `apache/kafka:4.3.1`, `kafbat/kafka-ui:v1.5.0`, `otel/opentelemetry-collector:0.162.0`, `prom/prometheus:v3.15.0`, and `grafana/grafana:13.2.3`. PostgreSQL is `localhost:5432`, database `flashsale`, user `flashsale`, password `flashsale`. Kafka is advertised and reached at `localhost:9092`. Kafka UI is `localhost:8088` and reaches the broker at `kafka:19092`. The host application still uses `localhost:9092`. Compose creates the topic `inventory.order-accepted` before the application publishes. The collector receives OTLP HTTP at `localhost:4318`. Prometheus is `localhost:9090`. Grafana is `localhost:3000`. Compose service names are `kafka`, `kafka-ui`, `otel-collector`, `prometheus`, and `grafana`. Kafka UI reaches the broker as `kafka`. Prometheus scrapes `otel-collector:8889`. Grafana's datasource is `http://prometheus:9090`. The Boot process uses the localhost addresses. Compose services call each other by service name. `localhost` inside a Compose container is that container. Application configuration does not use Compose service names.
 
 ### AD-11 — Signal export [ADOPTED]
 
@@ -136,6 +136,8 @@ flowchart LR
 | Docker image postgres | 18.6 |
 | Apache Kafka | 4.3.1 |
 | Docker image apache/kafka | 4.3.1 |
+| Docker image kafbat/kafka-ui | v1.5.0 |
+| Kafka UI | 1.5.0 |
 | Docker image otel/opentelemetry-collector | 0.162.0 |
 | Docker image prom/prometheus | v3.15.0 |
 | Prometheus | 3.15.0 |
@@ -154,12 +156,14 @@ flowchart LR
   subgraph compose["Docker Compose"]
     pg["postgres:18.6 localhost:5432"]
     kafka["apache/kafka:4.3.1 localhost:9092"]
+    kui["kafbat/kafka-ui:v1.5.0 localhost:8088"]
     otel["otel-collector:0.162.0 localhost:4318"]
     prom["prometheus:v3.15.0 localhost:9090"]
     graf["grafana:13.2.3 localhost:3000"]
   end
   app --> pg
   app --> kafka
+  kui --> kafka
   app --> otel
   otel --> prom
   prom --> graf
@@ -192,7 +196,7 @@ src/main/resources/
   db/migration/       # Flyway: item, customer, unique user id, item seed
   templates/          # landing page
   logback-spring.xml  # console pattern plus OpenTelemetry log appender
-compose.yaml          # postgres, kafka, otel-collector, prometheus, grafana
+compose.yaml          # postgres, kafka, kafka-ui, otel-collector, prometheus, grafana
 otel-collector-config.yaml
 ```
 
