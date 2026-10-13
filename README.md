@@ -43,7 +43,7 @@ flowchart LR
 
 A shopper already has an account. This service recognizes them by the user id they type. It does not look the account up.
 
-The form asks for a user id and a quantity. It does not name an item. Inventory always reads the seeded row `item-1`, which starts at quantity 10.
+The form asks for a user id and a quantity. It does not name an item. Inventory reads the single item row. A local run starts from the seeded row `item-1` at quantity 10.
 
 ![Landing page](docs/landing-page.png)
 
@@ -67,7 +67,7 @@ A successful order writes one JSON event. The Kafka key is `orderId`. The value 
 {"orderId":"<uuid>","userId":"<typed id>","itemId":"item-1","unitsDeducted":1}
 ```
 
-`unitsDeducted` is the number subtracted, not the number requested.
+`unitsDeducted` is the number subtracted, not the number requested. On a local run that has not called `POST /sale`, `itemId` is still `item-1`. After the pool is opened, the event's `itemId` is the open row.
 
 ### How one order is decided
 
@@ -123,7 +123,7 @@ WHERE id = :itemId AND quantity >= :units
 
 Zero rows means the units were no longer there. The transaction rolls back, including any customer write, and no order event is stored. The stock count is the database column. There is no cache in front of it.
 
-**Sold-out hint.** After a statement shows the pool is not above zero, later attempts can be answered from memory, before a permit and before a transaction. The hint is not a count and is never used to deduct. The product does not clear it. A later restock would still be answered as sold out until the process restarts.
+**Sold-out hint.** After a statement shows the pool is not above zero, later attempts can be answered from memory, before a permit and before a transaction. The hint is not a count and is never used to deduct. `POST /sale` with quantity 0 sets the hint. `POST /sale` and `POST /orders/{orderId}/release` clear the hint only when they leave the pool above zero. Until one of those commands does that, a later order is still answered as sold out.
 
 **Outbox and latency.** The order event is inserted in the same transaction as the deduction. The page already has "The order is in process" when `place` returns. Kafka is sent after commit by the outbox publisher, which polls on a short fixed interval, on the order of a couple of seconds. A broker delay does not change the shopper sentence. A failed send leaves the outbox row, and the publisher retries. The shopper-visible latency is the database transaction plus admission wait, not the Kafka round trip.
 
@@ -131,7 +131,40 @@ Zero rows means the units were no longer there. The transaction rolls back, incl
 
 **What the counters are for.** Inventory records `sale.attempts` and `sale.statements`. Every attempt that reaches inventory counts, including a turn-away. Opening the form does not. The counts reset when the process restarts. They are not success by themselves: a sale is a success only when no deducted unit was unavailable and no customer passed 3.
 
-**What this setup does not cover.** One process on one host. No second JVM, no hosted environment, no restock, and no production choice for the admission number. Two processes would split the sold-out hint and the admission bound while sharing one database.
+**What this setup does not cover.** One process on one host. No second JVM, no hosted environment, and no production choice for the admission number. Two processes would split the sold-out hint and the admission bound while sharing one database. `POST /sale` sets the pool. `POST /orders/{orderId}/release` gives units back.
+
+## Platform
+
+The form on `GET /` and `POST /` is the local demo. A storefront, a neighboring inventory system, and a declined payment use four commands instead. Those commands call the same inventory module. They do not add a Kafka topic, a meter, or a shopper sentence. `api` may call `inventory`. `inventory` does not call `api` or `page`, and it does not speak HTTP. The neighbor does not share this database.
+
+```mermaid
+flowchart LR
+    storefront[Storefront]
+    neighbor[Neighboring inventory]
+    payment[Declined payment]
+    api[api module]
+    inventory[inventory module]
+    row[(One item row)]
+    kafka[Kafka]
+
+    storefront -->|"POST /orders"| api
+    neighbor -->|"POST /sale"| api
+    neighbor -->|"GET /sale"| api
+    payment -->|"POST /orders/id/release"| api
+    api --> inventory
+    inventory --> row
+    inventory --> kafka
+```
+
+`POST /orders` places an order. The body is `{"userId","quantity"}`. It does not take an item id. It calls the same admission decision as the form and retries a turn-away inside the request. The response is HTTP 200, `{"outcome","result"}`. `outcome` is the shopper sentence. `result` is `in_process`, `wait`, `refused`, `sold_out`, `not_accepted`, or `unmatched`. A successful order stores one acceptance row in the same transaction as the deduction and the `inventory.order-accepted` event. The release path uses that event's `orderId`.
+
+`POST /sale` sets the single pool. The body is `{"itemId","quantity"}`. The quantity replaces the current quantity. It does not add to it. A blank item id or a quantity below 0 is HTTP 400 and changes nothing. Quantity 0 sets the sold-out hint. A quantity above 0 clears the hint. The same item id keeps customer rows, so the limit of 3 and the one-hour wait still apply. A different item id deletes customer rows. Acceptance rows stay, so a later release for the previous item is recognized and changes nothing.
+
+`GET /sale` returns `{"itemId","quantity"}`. It does not deduct and it does not publish.
+
+`POST /orders/{orderId}/release` returns the units from one accepted order for the open item. The response is HTTP 200, `{"itemId","quantity","released"}`. The first release adds those units to the pool and subtracts them from that customer. It does not clear `next_allowed`. The same order id again leaves the pool, the customer, and the hint unchanged, with `released` false. An unknown order id does the same. A release whose item is not the open row changes nothing. If the customer no longer has those units, the release changes nothing. When the pool is left above zero, the sold-out hint is cleared.
+
+Opening the pool, reading it, and returning units do not count a `sale.attempts` result and do not publish.
 
 ## Run locally
 

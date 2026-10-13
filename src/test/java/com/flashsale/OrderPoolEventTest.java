@@ -92,7 +92,8 @@ class OrderPoolEventTest {
 
 	@BeforeEach
 	void resetQuantity() {
-		jdbc.update("UPDATE item SET quantity = 10 WHERE id = 'item-1'");
+		jdbc.update("DELETE FROM accepted_order");
+		jdbc.update("UPDATE item SET id = 'item-1', quantity = 10");
 		orders.clearSoldOutHint();
 		jdbc.update("DELETE FROM customer");
 	}
@@ -930,7 +931,8 @@ class OrderPoolEventTest {
 		finally {
 			jdbcField.set(target, real);
 			orders.clearSoldOutHint();
-			jdbc.update("UPDATE item SET quantity = 10 WHERE id = 'item-1'");
+			jdbc.update("DELETE FROM accepted_order");
+			jdbc.update("UPDATE item SET id = 'item-1', quantity = 10");
 			jdbc.update("DELETE FROM customer");
 		}
 	}
