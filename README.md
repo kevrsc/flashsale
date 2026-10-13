@@ -45,6 +45,8 @@ A shopper already has an account. This service recognizes them by the user id th
 
 The form asks for a user id and a quantity. It does not name an item. Inventory always reads the seeded row `item-1`, which starts at quantity 10.
 
+![Landing page](docs/landing-page.png)
+
 The shopper sees one of these sentences:
 
 | Situation | Sentence |
@@ -145,6 +147,14 @@ Open `http://localhost:8080/`, enter a user id and a quantity, and submit. Grafa
 ```
 
 The tests use that same PostgreSQL and Kafka. Compose needs to be up.
+
+## Kafka UI
+
+Open `http://localhost:8088/ui/clusters/flashsale/all-topics/inventory.order-accepted`. The cluster `flashsale` is already connected. No bootstrap address to type.
+
+That page is the topic `inventory.order-accepted`. Overview shows one partition. Messages shows the records. The key is `orderId`. The value is the order JSON: `orderId`, `userId`, `itemId`, and `unitsDeducted`.
+
+![Kafka UI topic inventory.order-accepted](docs/kafka-ui-order-topic.png)
 
 ## Follow one order
 
