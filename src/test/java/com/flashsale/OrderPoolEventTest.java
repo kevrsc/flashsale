@@ -4,7 +4,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.spy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -27,6 +32,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.sql.DataSource;
 
@@ -53,6 +59,7 @@ import org.springframework.boot.json.JsonParserFactory;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.test.util.AopTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -840,6 +847,91 @@ class OrderPoolEventTest {
 
 			assertTrue(attempts() > attemptsBefore);
 			assertEquals(0, count("SELECT count(*) FROM customer WHERE units_ordered > 3"));
+		}
+	}
+
+	@Test
+	void unmatchedOutcomeReachesThePage() throws Exception {
+		Orders stub = new Orders(null, null) {
+			@Override
+			public boolean soldOutHint() {
+				return false;
+			}
+
+			@Override
+			public OrderOutcome place(String userId, int units) {
+				return OrderOutcome.unmatched();
+			}
+		};
+		Admission target = AopTestUtils.getUltimateTargetObject(admission);
+		Field ordersField = Admission.class.getDeclaredField("orders");
+		ordersField.setAccessible(true);
+		Object previous = ordersField.get(target);
+		ordersField.set(target, stub);
+		try {
+			String body = order("user-" + UUID.randomUUID(), 1);
+			assertFalse(body.contains("id=\"outcome\""));
+		}
+		finally {
+			ordersField.set(target, previous);
+		}
+	}
+
+	@Test
+	void zeroUnitsLeaveThePoolUnmatched() {
+		String userId = "user-" + UUID.randomUUID();
+		assertEquals(OrderOutcome.unmatched(), orders.place(userId, 0));
+		assertEquals(10, quantity());
+		assertEquals(0, customerRows());
+	}
+
+	@Test
+	void aMissedItemUpdateRereadsTheLockedQuantity() throws Exception {
+		Held sold = placeWithItemUpdate(1, 0, 1);
+		assertEquals(OrderOutcome.soldOut(), sold.outcome());
+		assertEquals(10, sold.quantity());
+		Held sameQuantity = placeWithItemUpdate(1, 10, 1);
+		assertEquals(OrderOutcome.unmatched(), sameQuantity.outcome());
+		assertEquals(10, sameQuantity.quantity());
+		Held placed = placeWithItemUpdate(1, 2, 3);
+		assertEquals(OrderOutcome.inProcess(), placed.outcome());
+		assertEquals(8, placed.quantity());
+	}
+
+	private record Held(OrderOutcome outcome, int quantity) {
+	}
+
+	private Held placeWithItemUpdate(int missedUpdates, int reread, int units) throws Exception {
+		Orders target = AopTestUtils.getUltimateTargetObject(orders);
+		Field jdbcField = Orders.class.getDeclaredField("jdbc");
+		jdbcField.setAccessible(true);
+		NamedParameterJdbcTemplate real = (NamedParameterJdbcTemplate) jdbcField.get(target);
+		NamedParameterJdbcTemplate spyTemplate = spy(real);
+		AtomicInteger missed = new AtomicInteger();
+		doAnswer(invocation -> {
+			String sql = invocation.getArgument(0);
+			if (sql.contains("SET quantity = quantity") && missed.getAndIncrement() < missedUpdates) {
+				return 0;
+			}
+			return invocation.callRealMethod();
+		}).when(spyTemplate).update(anyString(), org.mockito.ArgumentMatchers.<Map<String, ?>>any());
+		doAnswer(invocation -> {
+			String sql = invocation.getArgument(0);
+			if (sql.contains("SELECT quantity") && !sql.contains("FOR UPDATE")) {
+				return reread;
+			}
+			return invocation.callRealMethod();
+		}).when(spyTemplate).queryForObject(anyString(), org.mockito.ArgumentMatchers.<Map<String, ?>>any(), eq(Integer.class));
+		jdbcField.set(target, spyTemplate);
+		try {
+			OrderOutcome outcome = orders.place("user-" + UUID.randomUUID(), units);
+			return new Held(outcome, quantity());
+		}
+		finally {
+			jdbcField.set(target, real);
+			orders.clearSoldOutHint();
+			jdbc.update("UPDATE item SET quantity = 10 WHERE id = 'item-1'");
+			jdbc.update("DELETE FROM customer");
 		}
 	}
 

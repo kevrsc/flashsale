@@ -17,7 +17,7 @@ The Spring Boot application runs on the host. Docker Compose runs PostgreSQL, Ka
 | Database | PostgreSQL 18.6. Flyway owns the schema. Hibernate does not change it. |
 | Events | Transactional outbox through Namastack JDBC. Spring Modulith externalizes in outbox mode to Kafka. |
 | Broker | Apache Kafka 4.3.1. Topic `inventory.order-accepted`, one partition. |
-| Tests | JUnit via `./gradlew test`, against the Compose PostgreSQL and Kafka |
+| Tests | JUnit via `./gradlew test`, against the Compose PostgreSQL and Kafka. JaCoCo fails that run below 95% line coverage or 95% branch coverage |
 
 Modules:
 
@@ -146,7 +146,7 @@ Open `http://localhost:8080/`, enter a user id and a quantity, and submit. Grafa
 ./gradlew test
 ```
 
-The tests use that same PostgreSQL and Kafka. Compose needs to be up.
+The tests use that same PostgreSQL and Kafka. Compose needs to be up. JaCoCo runs with the tests and fails the build when line coverage or branch coverage is under 95%. The HTML report is `build/reports/jacoco/test/html/index.html`.
 
 ## Kafka UI
 

@@ -35,8 +35,8 @@ class CountingJdbcClient implements JdbcClient {
 				return invoke(method, target, args);
 			}
 			if (method.isDefault()) {
-				return args == null ? InvocationHandler.invokeDefault(proxy, method)
-						: InvocationHandler.invokeDefault(proxy, method, args);
+				// The default methods on these specs take no arguments.
+				return InvocationHandler.invokeDefault(proxy, method);
 			}
 			if (executes(method)) {
 				totals.publisherStatement(sql);
@@ -76,7 +76,8 @@ class CountingJdbcClient implements JdbcClient {
 			return method.invoke(target, args);
 		}
 		catch (InvocationTargetException ex) {
-			throw ex.getCause() == null ? ex : ex.getCause();
+			// Method.invoke always wraps the target exception.
+			throw ex.getCause();
 		}
 	}
 
