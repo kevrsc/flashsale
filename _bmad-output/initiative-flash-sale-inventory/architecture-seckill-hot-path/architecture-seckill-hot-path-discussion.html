@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Seckill hot-path — discussion diagram</title>
+  <style>
+    :root { color-scheme: light; }
+    body { margin: 0; font: 16px/1.45 "Segoe UI", sans-serif; color: #1c1917; background: #fafaf9; }
+    main { max-width: 1100px; margin: 0 auto; padding: 32px 24px 64px; }
+    h1 { font-size: 1.6rem; margin: 0 0 8px; }
+    h2 { font-size: 1.15rem; margin: 36px 0 12px; }
+    p.lead { margin: 0 0 24px; max-width: 68ch; }
+    .diagram { background: #fff; border: 1px solid #e7e5e4; border-radius: 12px; padding: 16px; overflow-x: auto; }
+    svg { display: block; min-width: 980px; }
+    .box { fill: #fff; stroke: #44403c; stroke-width: 1.5; }
+    .hot { fill: #fef3c7; }
+    .store { fill: #e0f2fe; }
+    .out { fill: #f5f5f4; stroke-dasharray: 5 4; }
+    text { font: 13px "Segoe UI", sans-serif; fill: #1c1917; }
+    .small { font-size: 11px; fill: #57534e; }
+    .arrow { stroke: #44403c; stroke-width: 1.4; fill: none; marker-end: url(#arrow); }
+    ol { max-width: 72ch; }
+    li { margin: 8px 0; }
+    table { border-collapse: collapse; width: 100%; background: #fff; }
+    th, td { border: 1px solid #e7e5e4; text-align: left; padding: 8px 10px; vertical-align: top; }
+    th { background: #f5f5f4; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Seckill hot-path</h1>
+  <p class="lead">Discussion diagram for a lead architect. The crowd is answered from one Redis script. The order is written afterward. The gateway and the sale application are Java 21 servlet processes on virtual threads. A box with a dashed border is outside this service, or it is a production placement this learning model does not run.</p>
+
+  <div class="diagram" role="img" aria-label="Context diagram of the seckill hot path">
+    <svg viewBox="0 0 1040 520" width="1040" height="520">
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+          <path d="M0,0 L8,3 L0,6 Z" fill="#44403c"></path>
+        </marker>
+      </defs>
+      <rect class="out box" x="40" y="40" width="140" height="56" rx="8"></rect>
+      <text x="110" y="64" text-anchor="middle">Crowd</text>
+      <text class="small" x="110" y="82" text-anchor="middle">100,000 attempts</text>
+
+      <rect class="out box" x="250" y="40" width="150" height="56" rx="8"></rect>
+      <text x="325" y="64" text-anchor="middle">CDN</text>
+      <text class="small" x="325" y="82" text-anchor="middle">production placement</text>
+
+      <rect class="box" x="470" y="40" width="170" height="56" rx="8"></rect>
+      <text x="555" y="64" text-anchor="middle">Gateway</text>
+      <text class="small" x="555" y="82" text-anchor="middle">servlet, virtual threads</text>
+
+      <rect class="box hot" x="720" y="28" width="250" height="80" rx="8"></rect>
+      <text x="845" y="58" text-anchor="middle">Sale application</text>
+      <text class="small" x="845" y="78" text-anchor="middle">qualify API, order consumer,</text>
+      <text class="small" x="845" y="94" text-anchor="middle">report publisher · many instances</text>
+
+      <rect class="box store" x="250" y="200" width="200" height="88" rx="8"></rect>
+      <text x="350" y="232" text-anchor="middle">Redis</text>
+      <text class="small" x="350" y="252" text-anchor="middle">one script writes hash sale</text>
+      <text class="small" x="350" y="268" text-anchor="middle">pending qualification documents</text>
+
+      <rect class="box store" x="520" y="200" width="180" height="88" rx="8"></rect>
+      <text x="610" y="232" text-anchor="middle">Kafka</text>
+      <text class="small" x="610" y="252" text-anchor="middle">qualification id</text>
+      <text class="small" x="610" y="268" text-anchor="middle">then the two reports</text>
+
+      <rect class="box store" x="770" y="200" width="180" height="88" rx="8"></rect>
+      <text x="860" y="232" text-anchor="middle">Postgres</text>
+      <text class="small" x="860" y="252" text-anchor="middle">one order per</text>
+      <text class="small" x="860" y="268" text-anchor="middle">qualification id</text>
+
+      <rect class="out box" x="430" y="390" width="220" height="64" rx="8"></rect>
+      <text x="540" y="418" text-anchor="middle">Inventory service</text>
+      <text class="small" x="540" y="436" text-anchor="middle">loads, starts, closes, consumes reports</text>
+
+      <path class="arrow" d="M180 68 H250"></path>
+      <path class="arrow" d="M400 68 H470"></path>
+      <path class="arrow" d="M640 68 H720"></path>
+      <path class="arrow" d="M740 108 L450 200"></path>
+      <path class="arrow" d="M845 108 L610 200"></path>
+      <path class="arrow" d="M900 108 L860 200"></path>
+      <path class="arrow" d="M610 288 V390"></path>
+      <path class="arrow" d="M450 390 L350 288"></path>
+      <text class="small" x="360" y="360">load / start / close</text>
+    </svg>
+  </div>
+
+  <h2>One qualification</h2>
+  <ol>
+    <li>The gateway reads hash <code>sale</code>. It answers unidentified, closed, not open, or sold out in that order, and it does not run the script.</li>
+    <li>Otherwise the sale application runs one Lua script. The script decrements the pool and stores the qualification document, or it does neither.</li>
+    <li>The caller is told they qualified. That response does not wait for Kafka, Postgres, or the inventory service.</li>
+    <li>Kafka carries that document. The order consumer inserts one row. A retry uses the same qualification id.</li>
+    <li>A document still pending is published again until the order row exists. The consumer then asks the script to drop it.</li>
+    <li>The report publisher sends one qualification report per order.</li>
+  </ol>
+  <p>Close is the only publisher of the close report, and a second close repeats the same remaining count.</p>
+
+  <h2>Settled choices</h2>
+  <table>
+    <thead>
+      <tr><th>Choice</th><th>What it rules out</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Kafka, already running in this repo</td><td>RabbitMQ</td></tr>
+      <tr><td>Spring Cloud Gateway is the edge this model runs</td><td>A CDN as the only filter, with no gateway process</td></tr>
+      <tr><td>The Redis pending set is the outbox for a lost publish</td><td>A SQL outbox, which cannot share the Redis decrement</td></tr>
+      <tr><td>The order consumer lives in the sale application</td><td>A separate order-writer process</td></tr>
+      <tr><td>Reports leave on Kafka for the inventory service</td><td>The sale application calling the inventory service on the attempt</td></tr>
+    </tbody>
+  </table>
+</main>
+</body>
+</html>
