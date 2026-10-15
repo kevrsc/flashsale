@@ -38,7 +38,7 @@ public class AttemptApi {
 		meters.counter("sale.qualification", "answer", answer).increment();
 		if ("qualified".equals(answer)) {
 			String qualificationId = node.path("qualificationId").asString();
-			request.setAttribute(DOCUMENT, script.pending(qualificationId));
+			attach(request, qualificationId);
 			log.info("answer=qualified qualificationId={}", qualificationId);
 		}
 		else {
@@ -49,6 +49,15 @@ public class AttemptApi {
 
 	static String userId(String body) {
 		return UserIds.read(body);
+	}
+
+	private void attach(HttpServletRequest request, String qualificationId) {
+		try {
+			request.setAttribute(DOCUMENT, script.pending(qualificationId));
+		}
+		catch (RuntimeException ex) {
+			log.warn("qualification document unavailable qualificationId={}", qualificationId);
+		}
 	}
 
 }

@@ -37,6 +37,8 @@ public class OrderInsert {
 		this.guard = guard;
 	}
 
+	// SaleHotPathTest pauses the insert here so the attempt response returns before the row exists.
+	// A live sale leaves the hook empty.
 	public void beforeInsert(Runnable hook) {
 		beforeInsert.set(hook == null ? () -> {
 		} : hook);
