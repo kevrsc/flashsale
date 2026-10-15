@@ -58,3 +58,298 @@ tasks.named('jacocoTestCoverageVerification') {
 		}
 	}
 }
+
+tasks.register('jmeterBurst') {
+	group = 'verification'
+	description = 'Opt-in Apache JMeter 5.6.3 burst of 100000 attempts. Not a dependency of test, check, or JaCoCo.'
+	doLast {
+		def closed = []
+		[8080, 8081].each { port ->
+			def socket = new Socket()
+			try {
+				socket.connect(new InetSocketAddress('127.0.0.1', port), 2000)
+			} catch (IOException ex) {
+				closed << "${port} (${ex.class.simpleName})"
+			} finally {
+				socket.close()
+			}
+		}
+		if (!closed.isEmpty()) {
+			throw new GradleException("jmeterBurst: failed before the burst; not accepting connections: ${closed.join(', ')}")
+		}
+
+		def expectedSha512 = '387fadca903ee0aa30e3f2115fdfedb3898b102e6b9fe7cc3942703094bd2e65b235df2b0c6d0d3248e74c9a7950a36e42625fd74425368342c12e40b0163076'
+		def jmeterRoot = layout.buildDirectory.dir('jmeter').get().asFile
+		def jmeterZip = new File(jmeterRoot, 'apache-jmeter-5.6.3.zip')
+		def jmeterHome = new File(jmeterRoot, 'apache-jmeter-5.6.3')
+		def jmeterJar = new File(jmeterHome, 'bin/ApacheJMeter.jar')
+		jmeterRoot.mkdirs()
+
+		def sha512 = { File file ->
+			def digest = java.security.MessageDigest.getInstance('SHA-512')
+			file.withInputStream { input ->
+				byte[] buffer = new byte[65536]
+				int read
+				while ((read = input.read(buffer)) >= 0) {
+					digest.update(buffer, 0, read)
+				}
+			}
+			digest.digest().encodeHex().toString()
+		}
+		if (!jmeterZip.exists() || sha512(jmeterZip) != expectedSha512) {
+			logger.lifecycle('jmeterBurst: downloading Apache JMeter 5.6.3')
+			def partial = new File(jmeterRoot, 'apache-jmeter-5.6.3.zip.partial')
+			partial.withOutputStream { out ->
+				new URI('https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-5.6.3.zip').toURL().withInputStream { input ->
+					out << input
+				}
+			}
+			def actual = sha512(partial)
+			if (actual != expectedSha512) {
+				partial.delete()
+				throw new GradleException("jmeterBurst: JMeter archive checksum mismatch: ${actual}")
+			}
+			if (jmeterZip.exists() && !jmeterZip.delete()) {
+				throw new GradleException('jmeterBurst: could not replace the JMeter archive')
+			}
+			if (!partial.renameTo(jmeterZip)) {
+				throw new GradleException('jmeterBurst: could not store the JMeter archive')
+			}
+		}
+		if (!jmeterJar.exists()) {
+			copy {
+				from zipTree(jmeterZip)
+				into jmeterRoot
+			}
+		}
+		if (!jmeterJar.exists()) {
+			throw new GradleException('jmeterBurst: Apache JMeter 5.6.3 jar is missing after extract')
+		}
+
+		def jtl = new File(jmeterRoot, 'sale-burst.jtl')
+		def idsFile = new File(jmeterRoot, 'qualified-ids.txt')
+		def logFile = new File(jmeterRoot, 'jmeter.log')
+		def saveservice = new File(jmeterRoot, 'saveservice.properties')
+		jtl.delete()
+		idsFile.delete()
+		if (idsFile.exists()) {
+			throw new GradleException("jmeterBurst: could not clear ${idsFile.name} before the burst")
+		}
+		saveservice.text = [
+			'jmeter.save.saveservice.output_format=csv',
+			'jmeter.save.saveservice.print_field_names=true',
+			'jmeter.save.saveservice.timestamp_format=ms',
+			'jmeter.save.saveservice.subresults=false',
+			'jmeter.save.saveservice.assertion_results=none',
+			'jmeter.save.saveservice.autoflush=true'
+		].join('\n') + '\n'
+
+		def javaExe = javaToolchains.launcherFor {
+			languageVersion = JavaLanguageVersion.of(17)
+		}.get().executablePath.asFile
+		def idsPath = idsFile.absolutePath.replace('\\', '/')
+		logger.lifecycle('jmeterBurst: running Apache JMeter 5.6.3')
+		def process = new ProcessBuilder(
+			javaExe.absolutePath,
+			'-Djava.awt.headless=true',
+			'-Xms512m',
+			'-Xmx1g',
+			'-jar', jmeterJar.absolutePath,
+			'-n',
+			'-t', file('loadtest/sale-burst.jmx').absolutePath,
+			'-l', jtl.absolutePath,
+			'-j', logFile.absolutePath,
+			'-q', saveservice.absolutePath,
+			'-JqualifiedIdsFile=' + idsPath
+		)
+		process.directory(projectDir)
+		process.environment().put('JAVA_HOME', javaExe.parentFile.parentFile.absolutePath)
+		process.inheritIO()
+		def running = process.start()
+		if (!running.waitFor(7, java.util.concurrent.TimeUnit.MINUTES)) {
+			running.destroyForcibly()
+			throw new GradleException('jmeterBurst: JMeter did not finish within seven minutes')
+		}
+		def jmeterExit = running.exitValue()
+
+		if (!jtl.exists()) {
+			throw new GradleException("jmeterBurst: JMeter exited ${jmeterExit} without a results file")
+		}
+		def parseCsv = { String line ->
+			def cols = []
+			def current = new StringBuilder()
+			boolean quoted = false
+			for (int i = 0; i < line.length(); i++) {
+				char ch = line.charAt(i)
+				if (quoted) {
+					if (ch == '"') {
+						if (i + 1 < line.length() && line.charAt(i + 1) == '"') {
+							current.append('"')
+							i++
+						} else {
+							quoted = false
+						}
+					} else {
+						current.append(ch)
+					}
+				} else if (ch == '"') {
+					quoted = true
+				} else if (ch == ',') {
+					cols << current.toString()
+					current.setLength(0)
+				} else {
+					current.append(ch)
+				}
+			}
+			cols << current.toString()
+			cols
+		}
+		def header = null
+		def loadCodes = []
+		def startCodes = []
+		long attempts = 0
+		long non200 = 0
+		def firstBad = null
+		long minStart = Long.MAX_VALUE
+		long maxFinish = Long.MIN_VALUE
+		jtl.eachLine('UTF-8') { raw ->
+			def line = raw.replace('\r', '')
+			if (line.isEmpty()) {
+				return
+			}
+			def cols = parseCsv(line)
+			if (header == null) {
+				header = cols
+				return
+			}
+			def value = { String name ->
+				int index = header.indexOf(name)
+				index >= 0 && index < cols.size() ? cols[index].trim() : ''
+			}
+			def label = value('label')
+			def code = value('responseCode')
+			if (label == 'load') {
+				loadCodes << code
+			} else if (label == 'start') {
+				startCodes << code
+			} else if (label == 'attempt') {
+				attempts++
+				if (code != '200') {
+					non200++
+					if (firstBad == null) {
+						firstBad = code
+					}
+				}
+				long startedAt = value('timeStamp') as long
+				long elapsed = value('elapsed') as long
+				minStart = Math.min(minStart, startedAt)
+				maxFinish = Math.max(maxFinish, startedAt + elapsed)
+			}
+		}
+		if (loadCodes.size() != 1) {
+			throw new GradleException("jmeterBurst: expected one load request but found ${loadCodes.size()}")
+		}
+		if (loadCodes[0] != '200') {
+			if (attempts > 0) {
+				throw new GradleException("jmeterBurst: load returned ${loadCodes[0]} but ${attempts} attempts were sent")
+			}
+			throw new GradleException("jmeterBurst: load returned ${loadCodes[0]}; failed before any attempt")
+		}
+		if (startCodes.size() != 1 || startCodes[0] != '200') {
+			def startCode = startCodes.isEmpty() ? 'missing' : startCodes[0]
+			if (attempts > 0) {
+				throw new GradleException("jmeterBurst: start returned ${startCode} but ${attempts} attempts were sent")
+			}
+			throw new GradleException("jmeterBurst: start returned ${startCode}; failed before the burst")
+		}
+		if (attempts != 100_000L) {
+			throw new GradleException("jmeterBurst: expected 100000 attempts but found ${attempts}")
+		}
+		if (non200 > 0) {
+			throw new GradleException("jmeterBurst: ${non200} attempts were not HTTP 200 (first code ${firstBad})")
+		}
+		long duration = maxFinish - minStart
+		if (duration > 300_000L) {
+			throw new GradleException("jmeterBurst: attempts finished in ${duration} ms, past the five-minute limit")
+		}
+		if (jmeterExit != 0) {
+			throw new GradleException("jmeterBurst: JMeter exited ${jmeterExit}")
+		}
+
+		def ids = [] as LinkedHashSet
+		int invalidBodies = 0
+		int bodyCount = 0
+		if (idsFile.exists()) {
+			def slurper = new groovy.json.JsonSlurper()
+			idsFile.eachLine('UTF-8') { raw ->
+				def line = raw.trim()
+				if (line.isEmpty()) {
+					return
+				}
+				bodyCount++
+				try {
+					def body = slurper.parseText(line)
+					def id = body?.qualificationId?.toString()
+					if (body?.answer == 'qualified' && id) {
+						ids.add(id)
+					} else {
+						invalidBodies++
+					}
+				} catch (RuntimeException ex) {
+					invalidBodies++
+				}
+			}
+		}
+		boolean qualifiedOk = invalidBodies == 0 && bodyCount == 100 && ids.size() == 100
+
+		def postgresJar = configurations.runtimeClasspath.files.find { it.name.startsWith('postgresql-') }
+		if (postgresJar == null) {
+			throw new GradleException('jmeterBurst: PostgreSQL driver is not on the runtime classpath')
+		}
+		def loader = new URLClassLoader([postgresJar.toURI().toURL()] as URL[])
+		try {
+			def driver = loader.loadClass('org.postgresql.Driver').getDeclaredConstructor().newInstance() as java.sql.Driver
+			def jdbcProps = new Properties()
+			jdbcProps.setProperty('user', 'flashsale')
+			jdbcProps.setProperty('password', 'flashsale')
+			def openOrders = {
+				def connection = driver.connect('jdbc:postgresql://localhost:5432/flashsale?connectTimeout=5&socketTimeout=10', jdbcProps)
+				if (connection == null) {
+					throw new IOException('PostgreSQL driver rejected the orders URL')
+				}
+				connection
+			}
+			def readOrders = { java.sql.Connection connection ->
+				connection.createStatement().withCloseable { statement ->
+					statement.executeQuery('SELECT qualification_id FROM orders').withCloseable { rs ->
+						def found = [] as LinkedHashSet
+						while (rs.next()) {
+							found.add(rs.getString(1))
+						}
+						found
+					}
+				}
+			}
+
+			def outcome = com.flashsale.jmeter.BurstTally.await(
+				{ ->
+					openOrders().withCloseable { connection ->
+						readOrders(connection)
+					}
+				} as java.util.concurrent.Callable,
+				ids,
+				qualifiedOk,
+				{ -> System.currentTimeMillis() } as com.flashsale.jmeter.BurstTally.Clock,
+				{ millis -> Thread.sleep(millis) } as com.flashsale.jmeter.BurstTally.Sleep)
+			if (!outcome.matched) {
+				def detail = outcome.error == null
+					? "qualified=${ids.size()} bodies=${bodyCount} invalidBodies=${invalidBodies} orders=${outcome.orders}"
+					: "orders query failed: ${outcome.error.message}"
+				throw new GradleException("jmeterBurst: tally failed after the order wait; ${detail}")
+			}
+			logger.lifecycle("jmeterBurst: 100 qualified, 100 orders, attempts finished in ${duration} ms")
+		} finally {
+			loader.close()
+		}
+	}
+}
