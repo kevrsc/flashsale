@@ -53,11 +53,9 @@ services:
           echo "waiting for kafka"
           sleep 2
         done
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic inventory.order-accepted --replication-factor 1 --partitions 1
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic sale.qualification --replication-factor 1 --partitions 1
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic sale.qualification-report --replication-factor 1 --partitions 1
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic sale.close-report --replication-factor 1 --partitions 1
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --describe --topic inventory.order-accepted
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --describe --topic sale.qualification
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --describe --topic sale.qualification-report
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --describe --topic sale.close-report
@@ -100,7 +98,7 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/orders.json
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/sale.json
     volumes:
       - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
       - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards

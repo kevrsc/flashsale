@@ -1,62 +1,22 @@
 plugins {
-	id 'java'
-	id 'jacoco'
-	id 'org.springframework.boot' version '4.1.1'
-	id 'io.spring.dependency-management' version '1.1.7'
+	id 'java-base'
 }
 
 group = 'com.flashsale'
 version = '0.0.1-SNAPSHOT'
 
-java {
-	toolchain {
-		languageVersion = JavaLanguageVersion.of(17)
-	}
-}
-
 repositories {
 	mavenCentral()
 }
 
-dependencies {
-	implementation 'org.springframework.boot:spring-boot-starter-flyway'
-	implementation 'org.springframework.boot:spring-boot-starter-jdbc'
-	implementation 'org.springframework.boot:spring-boot-starter-thymeleaf'
-	implementation 'org.springframework.boot:spring-boot-starter-opentelemetry'
-	implementation 'io.opentelemetry.instrumentation:opentelemetry-logback-appender-1.0:2.26.0-alpha'
-	implementation 'org.springframework.boot:spring-boot-starter-webmvc'
-	implementation 'org.flywaydb:flyway-database-postgresql:12.4.0'
-	implementation 'org.springframework.modulith:spring-modulith-starter-namastack:2.1.1'
-	implementation 'io.namastack:namastack-outbox-observability:1.7.3'
-	implementation 'org.springframework.modulith:spring-modulith-events-kafka:2.1.1'
-	runtimeOnly 'org.postgresql:postgresql'
-	testImplementation 'org.springframework.boot:spring-boot-starter-flyway-test'
-	testImplementation 'org.springframework.boot:spring-boot-starter-jdbc-test'
-	testImplementation 'org.springframework.boot:spring-boot-starter-thymeleaf-test'
-	testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
-	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-}
-
-tasks.named('test') {
-	useJUnitPlatform()
-	finalizedBy tasks.named('jacocoTestReport'), tasks.named('jacocoTestCoverageVerification')
-}
-
-tasks.named('jacocoTestCoverageVerification') {
-	violationRules {
-		rule {
-			limit {
-				counter = 'LINE'
-				value = 'COVEREDRATIO'
-				minimum = 0.95
-			}
-			limit {
-				counter = 'BRANCH'
-				value = 'COVEREDRATIO'
-				minimum = 0.95
-			}
-		}
+configurations {
+	ordersDriver {
+		transitive = false
 	}
+}
+
+dependencies {
+	ordersDriver 'org.postgresql:postgresql:42.7.13'
 }
 
 tasks.register('jmeterBurst') {
@@ -145,7 +105,7 @@ tasks.register('jmeterBurst') {
 		].join('\n') + '\n'
 
 		def javaExe = javaToolchains.launcherFor {
-			languageVersion = JavaLanguageVersion.of(17)
+			languageVersion = JavaLanguageVersion.of(21)
 		}.get().executablePath.asFile
 		def idsPath = idsFile.absolutePath.replace('\\', '/')
 		logger.lifecycle('jmeterBurst: running Apache JMeter 5.6.3')
@@ -302,10 +262,7 @@ tasks.register('jmeterBurst') {
 		}
 		boolean qualifiedOk = invalidBodies == 0 && bodyCount == 100 && ids.size() == 100
 
-		def postgresJar = configurations.runtimeClasspath.files.find { it.name.startsWith('postgresql-') }
-		if (postgresJar == null) {
-			throw new GradleException('jmeterBurst: PostgreSQL driver is not on the runtime classpath')
-		}
+		def postgresJar = configurations.ordersDriver.singleFile
 		def loader = new URLClassLoader([postgresJar.toURI().toURL()] as URL[])
 		try {
 			def driver = loader.loadClass('org.postgresql.Driver').getDeclaredConstructor().newInstance() as java.sql.Driver

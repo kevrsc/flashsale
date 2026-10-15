@@ -1,214 +1,73 @@
-# Flash sale inventory
+# Flash sale
 
-A local inventory service for one item. Many people can try to buy a limited quantity at once. The earliest successful orders take the units that are still available. Nobody is charged a unit that was not there, and one customer cannot successfully order more than 3 units.
+A local learning model of a seckill sale. About 100,000 attempts arrive within minutes for a pool of 100 units. The sale answers each attempt at once, takes at most one unit per qualified attempt, and writes one order per qualification after the answer has gone back.
 
-This service does not take payment, fulfill the item, or create accounts. On a successful order it deducts the units and publishes an order event. Another service would complete the purchase.
+There are no accounts, no payment, and no shopper page. A unit taken at qualification is not returned if payment never finishes.
 
 ## Technology
 
-The Spring Boot application runs on the host. Docker Compose runs PostgreSQL, Kafka, Kafka UI, the OpenTelemetry Collector, Prometheus, and Grafana. PostgreSQL is `localhost:5432`, Kafka is `localhost:9092`, Kafka UI is `localhost:8088`, the collector receives OTLP at `localhost:4318`, Prometheus is `localhost:9090`, and Grafana is `localhost:3000`.
-
 | Piece | Choice |
 | --- | --- |
-| Language | Java 17 |
-| Application | Spring Boot 4.1.1, Gradle |
-| Web | Spring MVC and a Thymeleaf form on `GET /` and `POST /` |
-| Modules | Spring Modulith 2.1.1. `page` may call `inventory`. `inventory` does not call `page`. |
-| Database | PostgreSQL 18.6. Flyway owns the schema. Hibernate does not change it. |
-| Events | Transactional outbox through Namastack JDBC. Spring Modulith externalizes in outbox mode to Kafka. |
-| Broker | Apache Kafka 4.3.1. Topic `inventory.order-accepted`, one partition. |
-| Tests | JUnit via `./gradlew test`, against the Compose PostgreSQL and Kafka. JaCoCo fails that run below 95% line coverage or 95% branch coverage |
-
-Modules:
-
-```mermaid
-flowchart LR
-    shopper[Shopper]
-    page[page module]
-    inventory[inventory module]
-    db[(PostgreSQL)]
-    outbox[Outbox tables]
-    kafka[Kafka]
-
-    shopper --> page
-    page --> inventory
-    inventory --> db
-    inventory --> outbox
-    outbox --> kafka
-```
-
-`page` renders the form and retries only when inventory turns an attempt away. `inventory` opens the transaction, decides the order, and writes the outbox row in that same transaction. Kafka is sent after the commit.
-
-## Business use case
-
-A shopper already has an account. This service recognizes them by the user id they type. It does not look the account up.
-
-The form asks for a user id and a quantity. It does not name an item. Inventory reads the single item row. A local run starts from the seeded row `item-1` at quantity 10.
-
-![Landing page](docs/landing-page.png)
-
-The shopper sees one of these sentences:
-
-| Situation | Sentence |
-| --- | --- |
-| Units were deducted | The order is in process |
-| Same customer orders again within one hour, and the pool is still above zero | Wait one hour before ordering again |
-| The pool could cover the request, but this customer has already ordered 3 units | The order is refused |
-| The pool is empty, including during the wait | The item has sold out |
-| The user id is empty, or the quantity is less than 1 | The order was not accepted |
-
-Units deducted are the smaller of the quantity asked for, the units still in the pool, and the units that customer has left under the limit of 3. A short pool of at least 1 is accepted for that smaller number, so the customer keeps their place. A request the pool could cover, but that would pass the limit, is accepted for the units left. Zero units left is a refusal. Sold out wins over the wait. A sold-out attempt does not start the wait.
-
-The one-hour wait starts when an order succeeds, not at the opening of the sale. It is stored on the customer row from PostgreSQL's clock.
-
-A successful order writes one JSON event. The Kafka key is `orderId`. The value has exactly these fields:
-
-```json
-{"orderId":"<uuid>","userId":"<typed id>","itemId":"item-1","unitsDeducted":1}
-```
-
-`unitsDeducted` is the number subtracted, not the number requested. On a local run that has not called `POST /sale`, `itemId` is still `item-1`. After the pool is opened, the event's `itemId` is the open row.
-
-### How one order is decided
-
-```mermaid
-flowchart TD
-    post[POST user id and quantity]
-    blank{Empty user id or quantity under 1?}
-    hint{Sold-out hint set?}
-    permit{Admission permit free?}
-    qty{Pool above zero?}
-    wait{Customer still inside the hour?}
-    left{Units left under the limit of 3?}
-    deduct[Deduct the smaller of request, pool, and units left]
-    notAccepted[The order was not accepted]
-    soldOut[The item has sold out]
-    retry[Turn away, pause, try again]
-    waitMsg[Wait one hour before ordering again]
-    refused[The order is refused]
-    inProcess[The order is in process]
-
-    post --> blank
-    blank -->|yes| notAccepted
-    blank -->|no| hint
-    hint -->|yes| soldOut
-    hint -->|no| permit
-    permit -->|no| retry
-    retry --> permit
-    permit -->|yes| qty
-    qty -->|no| soldOut
-    qty -->|yes| wait
-    wait -->|yes| waitMsg
-    wait -->|no| left
-    left -->|no| refused
-    left -->|yes| deduct
-    deduct --> inProcess
-```
-
-A turn-away is not a shopper sentence. The page waits and tries again. The first attempt is not delayed.
-
-## Concurrency and traffic
-
-The scarce resource is one item row. Every successful order updates that row. The design keeps that contention inside the database and limits how many transactions can pile onto it.
-
-**Admission.** At most `flashsale.admission.bound` attempts hold a permit. The local setting is 2, so a test can fill it. A refusal takes no database connection and is not shown as sold out. The page retries with a random pause of 10 to 50 milliseconds, and only after a turn-away. The retry has no upper bound: a full gate holds the request thread until a permit is free. That protects the database and spends request threads instead.
-
-**The deduction.** Inventory locks the customer row, then the item row. The pool changes only with a conditional update:
-
-```sql
-UPDATE item
-SET quantity = quantity - :units
-WHERE id = :itemId AND quantity >= :units
-```
-
-Zero rows means the units were no longer there. The transaction rolls back, including any customer write, and no order event is stored. The stock count is the database column. There is no cache in front of it.
-
-**Sold-out hint.** After a statement shows the pool is not above zero, later attempts can be answered from memory, before a permit and before a transaction. The hint is not a count and is never used to deduct. `POST /sale` with quantity 0 sets the hint. `POST /sale` and `POST /orders/{orderId}/release` clear the hint only when they leave the pool above zero. Until one of those commands does that, a later order is still answered as sold out.
-
-**Outbox and latency.** The order event is inserted in the same transaction as the deduction. The page already has "The order is in process" when `place` returns. Kafka is sent after commit by the outbox publisher, which polls on a short fixed interval, on the order of a couple of seconds. A broker delay does not change the shopper sentence. A failed send leaves the outbox row, and the publisher retries. The shopper-visible latency is the database transaction plus admission wait, not the Kafka round trip.
-
-**Database pressure.** The bound caps concurrent inventory transactions, and each of those holds the item row only for the decision and the update. Connections beyond the bound never open a transaction for that attempt. The publisher keeps polling, so `sale.statements` moves even when nobody is ordering. Flyway and test SQL are not counted in those totals.
-
-**What the counters are for.** Inventory records `sale.attempts` and `sale.statements`. Every attempt that reaches inventory counts, including a turn-away. Opening the form does not. The counts reset when the process restarts. They are not success by themselves: a sale is a success only when no deducted unit was unavailable and no customer passed 3.
-
-**What this setup does not cover.** One process on one host. No second JVM, no hosted environment, and no production choice for the admission number. Two processes would split the sold-out hint and the admission bound while sharing one database. `POST /sale` sets the pool. `POST /orders/{orderId}/release` gives units back.
-
-## Platform
-
-The form on `GET /` and `POST /` is the local demo. A storefront, a neighboring inventory system, and a declined payment use four commands instead. Those commands call the same inventory module. They do not add a Kafka topic, a meter, or a shopper sentence. `api` may call `inventory`. `inventory` does not call `api` or `page`, and it does not speak HTTP. The neighbor does not share this database.
+| Language | Java 21 with virtual threads |
+| Applications | Spring Boot 4.1.1, Gradle. `gateway` on port 8080, `sale` on port 8081 |
+| Edge | Spring Cloud Gateway (servlet) |
+| Pool | Redis 8.10.2. One Lua script decides every attempt |
+| Broker | Apache Kafka 4.3.1. Topics `sale.qualification`, `sale.qualification-report`, `sale.close-report` |
+| Orders | PostgreSQL 18.6. Flyway owns the schema |
+| Breaker | Spring Cloud Circuit Breaker with Resilience4j. It never wraps the pool decrement |
+| Telemetry | OpenTelemetry Collector, Prometheus, Grafana |
+| Tests | JUnit with Testcontainers. JaCoCo fails `sale` or `gateway` below 95% line or branch coverage |
 
 ```mermaid
 flowchart LR
-    storefront[Storefront]
-    neighbor[Neighboring inventory]
-    payment[Declined payment]
-    api[api module]
-    inventory[inventory module]
-    row[(One item row)]
+    client[Client]
+    gateway[gateway :8080]
+    sale[sale :8081]
+    redis[(Redis hash sale)]
     kafka[Kafka]
+    db[(PostgreSQL orders)]
 
-    storefront -->|"POST /orders"| api
-    neighbor -->|"POST /sale"| api
-    neighbor -->|"GET /sale"| api
-    payment -->|"POST /orders/id/release"| api
-    api --> inventory
-    inventory --> row
-    inventory --> kafka
+    client -->|"POST /attempts"| gateway
+    gateway -->|"HMGET"| redis
+    gateway -->|"forward when the pool may have a unit"| sale
+    sale -->|"EVAL sale.lua"| redis
+    sale -->|"sale.qualification"| kafka
+    kafka --> sale
+    sale --> db
 ```
 
-`POST /orders` places an order. The body is `{"userId","quantity"}`. It does not take an item id. It calls the same admission decision as the form and retries a turn-away inside the request. The response is HTTP 200, `{"outcome","result"}`. `outcome` is the shopper sentence. `result` is `in_process`, `wait`, `refused`, `sold_out`, `not_accepted`, or `unmatched`. A successful order stores one acceptance row in the same transaction as the deduction and the `inventory.order-accepted` event. The release path uses that event's `orderId`.
+The gateway answers `not_open`, `closed`, `sold_out`, and `unidentified` from the Redis hash without running the script. Only an attempt that could still take a unit is forwarded. The script decrements and stores the qualification document in the same execution. Kafka carries that document to the order consumer, which inserts one row per qualification id.
 
-`POST /sale` sets the single pool. The body is `{"itemId","quantity"}`. The quantity replaces the current quantity. It does not add to it. A blank item id or a quantity below 0 is HTTP 400 and changes nothing. Quantity 0 sets the sold-out hint. A quantity above 0 clears the hint. The same item id keeps customer rows, so the limit of 3 and the one-hour wait still apply. A different item id deletes customer rows. Acceptance rows stay, so a later release for the previous item is recognized and changes nothing.
+## HTTP
 
-`GET /sale` returns `{"itemId","quantity"}`. It does not deduct and it does not publish.
+| Call | Where | Body | Result |
+| --- | --- | --- | --- |
+| `POST /attempts` | gateway 8080 | `{"userId"}` | Always HTTP 200. `answer` is `qualified`, `sold_out`, `not_open`, `closed`, or `unidentified`. A qualified answer also has `qualificationId` |
+| `GET /sale` | gateway 8080 | | The sale hash, read without the script |
+| `POST /sales/load` | sale 8081 | `{"itemId","allotment"}` | 200 applied, 400 blank item or negative allotment, 409 already open or closed |
+| `POST /sales/start` | sale 8081 | `{}` | 200 applied, 409 refused |
+| `POST /sales/close` | sale 8081 | `{}` | 200 with `saleId`, `itemId`, and `remaining`. A second close returns the same count |
 
-`POST /orders/{orderId}/release` returns the units from one accepted order for the open item. The response is HTTP 200, `{"itemId","quantity","released"}`. The first release adds those units to the pool and subtracts them from that customer. It does not clear `next_allowed`. The same order id again leaves the pool, the customer, and the hint unchanged, with `released` false. An unknown order id does the same. A release whose item is not the open row changes nothing. If the customer no longer has those units, the release changes nothing. When the pool is left above zero, the sold-out hint is cleared.
-
-Opening the pool, reading it, and returning units do not count a `sale.attempts` result and do not publish.
+Redis keys, fields, and incident reads are in [docs/devops/README.md](docs/devops/README.md).
 
 ## Run locally
 
 ```bash
 docker compose up -d
-./gradlew bootRun
+./gradlew :sale:bootRun
+./gradlew :gateway:bootRun
 ```
 
-Open `http://localhost:8080/`, enter a user id and a quantity, and submit. Grafana is `http://localhost:3000/`. Kafka UI is `http://localhost:8088/`. It is already connected to this broker. PostgreSQL is `localhost:5432`, database `flashsale`, user `flashsale`, password `flashsale`. Kafka is `localhost:9092`. The collector receives OTLP at `localhost:4318`. Prometheus is `localhost:9090`. Those values are for this local Compose file.
+Kafka UI is `http://localhost:8088/`. Grafana is `http://localhost:3000/` and opens on the Sale dashboard. Prometheus is `localhost:9090`. The collector receives OTLP at `localhost:4318`. PostgreSQL is `localhost:5432`, database, user, and password `flashsale`.
 
 ```bash
 ./gradlew test
 ```
 
-The tests use that same PostgreSQL and Kafka. Compose needs to be up. JaCoCo runs with the tests and fails the build when line coverage or branch coverage is under 95%. The HTML report is `build/reports/jacoco/test/html/index.html`.
+The tests start their own PostgreSQL, Kafka, and Redis through Testcontainers, so Docker has to be running.
 
-## Kafka UI
+## Burst
 
-Open `http://localhost:8088/ui/clusters/flashsale/all-topics/inventory.order-accepted`. The cluster `flashsale` is already connected. No bootstrap address to type.
+`./gradlew jmeterBurst` runs Apache JMeter 5.6.3 against a running sale and gateway. It is not part of `test` or `check`. It loads an allotment of 100, starts the sale, sends 100,000 attempts through the gateway, and passes only when 100 attempts qualified and those 100 ids each have one order row within two minutes.
 
-That page is the topic `inventory.order-accepted`. Overview shows one partition. Messages shows the records. The key is `orderId`. The value is the order JSON: `orderId`, `userId`, `itemId`, and `unitsDeducted`.
-
-![Kafka UI topic inventory.order-accepted](docs/kafka-ui-order-topic.png)
-
-## Follow one order
-
-Place one successful order and read the same trace id in three places. Grafana shows the sale counters and the HTTP request count for that run.
-
-Start this before you submit. It waits for the next order event. `traceparent` begins with `00-` and the same trace id. The span id in that header is a child of the console span, so the two span ids differ. The JSON body is still `orderId`, `userId`, `itemId`, and `unitsDeducted`.
-
-```bash
-docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:19092 --topic inventory.order-accepted --partition 0 --offset latest --max-messages 1 --formatter-property print.headers=true --formatter-property print.key=true
-```
-
-Submit a user id and a quantity at `http://localhost:8080/`. The shopper sentence is "The order is in process". The console line for that order includes `trace_id` and `span_id`.
-
-Wait a few seconds after the page returns. The order span is exported in a batch, so it is not in the collector log the instant the page comes back. Then the collector log prints that trace id on the span named `http post /`:
-
-```bash
-docker compose logs otel-collector
-```
-
-Spans named `task outboxProcessingScheduler.process` are the publisher poll. They are not the order.
-
-Open `http://localhost:3000/`. The Orders dashboard is already there. Sale attempts lists every ending by name: In process, Wait one hour, Refused, Sold out, Not accepted, Turned away, and Unmatched. In process is a successful deduction. A zero means that ending has not happened since the process started. Sale statements reads `sum by (kind) (sale_statements_total)`. The HTTP server requests panel stays under its own title and is not that tally. Those numbers can take about a minute to move. They are not a separate series for one trace id.
-
-![Orders dashboard](docs/orders-dashboard.png)
+It needs an empty `sale` hash and an empty `orders` table. A used sale fails with load 409 before any attempt.
