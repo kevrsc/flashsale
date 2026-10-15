@@ -13,6 +13,11 @@ services:
       timeout: 5s
       retries: 30
 
+  redis:
+    image: redis:8.10.2
+    ports:
+      - "6379:6379"
+
   kafka:
     image: apache/kafka:4.3.1
     hostname: kafka
@@ -49,7 +54,13 @@ services:
           sleep 2
         done
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic inventory.order-accepted --replication-factor 1 --partitions 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic sale.qualification --replication-factor 1 --partitions 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic sale.qualification-report --replication-factor 1 --partitions 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic sale.close-report --replication-factor 1 --partitions 1
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --describe --topic inventory.order-accepted
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --describe --topic sale.qualification
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --describe --topic sale.qualification-report
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --describe --topic sale.close-report
 
   kafka-ui:
     image: kafbat/kafka-ui:v1.5.0

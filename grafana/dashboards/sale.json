@@ -1,0 +1,103 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "description": "Attempt answers from the sale application and the gateway. Qualified is a unit taken from the shared pool.",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "pluginVersion": "13.2.3",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum(sale_qualification_total{answer=\"qualified\"}) or vector(0)",
+          "instant": true,
+          "legendFormat": "Qualified",
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum(sale_qualification_total{answer=\"sold_out\"}) or vector(0)",
+          "instant": true,
+          "legendFormat": "Sold out",
+          "range": false,
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum(sale_qualification_total{answer=\"not_open\"}) or vector(0)",
+          "instant": true,
+          "legendFormat": "Not open",
+          "range": false,
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum(sale_qualification_total{answer=\"closed\"}) or vector(0)",
+          "instant": true,
+          "legendFormat": "Closed",
+          "range": false,
+          "refId": "D"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum(sale_qualification_total{answer=\"unidentified\"}) or vector(0)",
+          "instant": true,
+          "legendFormat": "Unidentified",
+          "range": false,
+          "refId": "E"
+        }
+      ],
+      "title": "Sale qualifications",
+      "type": "stat"
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["sale"],
+  "templating": { "list": [] },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Sale",
+  "uid": "sale",
+  "version": 1
+}
