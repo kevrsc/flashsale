@@ -153,7 +153,7 @@
               <collectionProp name="Arguments.arguments">
                 <elementProp name="" elementType="HTTPArgument">
                   <boolProp name="HTTPArgument.always_encode">false</boolProp>
-                  <stringProp name="Argument.value">{"userId":"u${__counter(TRUE)}"}</stringProp>
+                  <stringProp name="Argument.value">{"userId":"u${__counter(FALSE)}"}</stringProp>
                   <stringProp name="Argument.metadata">=</stringProp>
                 </elementProp>
               </collectionProp>

@@ -67,3 +67,7 @@ docker compose exec redis redis-cli HGET pending <qualificationId>
 `HGETALL sale` is the pool the gateway answers from: `closed`, then `open`, then `soldOut` or `remaining` of `0`. `HLEN pending` is the number of qualifications not yet removed. A field still present means the order insert has not committed, or the relay has not finished republishing that document to `sale.qualification`. The relay scans `HGETALL pending` and republishes each value while the field remains.
 
 Leave the hashes alone from `redis-cli` while a sale is open. `HSET` on `sale` and `HDEL` on `pending` skip the script, so the pool, the flags, and the order row can disagree.
+
+## Local burst reset
+
+`./gradlew jmeterReset -PconfirmReset=local` deletes both hashes and truncates `orders` and `qualification_report_sent`, so `./gradlew jmeterBurst` can run again. It is for the local learning sale only. Never run it in production: it removes every order and every qualification still waiting in `pending`, and nothing can rebuild them.

@@ -66,6 +66,8 @@ context: []
 - A closed 8080/8081 exited 1 before any attempt. A second run against the used sale exited 1 on load 409 with no attempts, and `orders` stayed at 100.
 - The wrong-tally wait lives in `BurstTally` and is what the task calls. `BurstTallyTest` ran five cases, all passing: a missing order, an extra order, a qualified count other than 100, a query failure, and an immediate match.
 - Review patches: the task throws if `qualified-ids.txt` cannot be deleted, and it closes the PostgreSQL classloader after the order poll. A second live run after that patch finished in 33863 ms with 100 qualified and 100 orders.
+- Old-service cleanup: the root project no longer builds a Java 17 app. `jmeterBurst` takes the driver from the non-transitive `ordersDriver` configuration and launches JMeter on Java 21.
+- During the walkthrough the user asked for a read-only clean-state check and a separate reset. `jmeterBurst` now fails before JMeter starts when `orders` or `pending` is not empty, and it still deletes nothing. `jmeterReset` is a separate opt-in task that refuses without `-PconfirmReset=local`. It deletes `sale` and `pending` and truncates `orders` and `qualification_report_sent`. The README and the devops notes mark it as local only, never for production. Verified live: a dirty sale failed in 1s, an unconfirmed reset refused and changed nothing, a confirmed reset emptied both stores, and the next burst finished in 33110 ms with 100 qualified and 100 orders.
 
 ## Plan Change Log
 

@@ -70,4 +70,17 @@ The tests start their own PostgreSQL, Kafka, and Redis through Testcontainers, s
 
 `./gradlew jmeterBurst` runs Apache JMeter 5.6.3 against a running sale and gateway. It is not part of `test` or `check`. It loads an allotment of 100, starts the sale, sends 100,000 attempts through the gateway, and passes only when 100 attempts qualified and those 100 ids each have one order row within two minutes.
 
-It needs an empty `sale` hash and an empty `orders` table. A used sale fails with load 409 before any attempt.
+It needs an empty `sale` hash, an empty `pending` hash, and an empty `orders` table. Before downloading or starting JMeter, it fails if `orders` or `pending` still holds rows from an earlier sale. A sale that is still loaded fails with load 409 before any attempt. The task never deletes anything.
+
+### Reset between bursts
+
+> **Destructive. Local learning sale only.** A reset deletes the sale, its unacknowledged qualifications, and every order row. Never point it at production or at a shared database. In a real sale those rows are customers' orders, and the pending hash is the only copy of qualifications not yet written as orders.
+
+`./gradlew jmeterReset -PconfirmReset=local` deletes the Redis hashes `sale` and `pending` and truncates `orders` and `qualification_report_sent` on `localhost`. Without `-PconfirmReset=local` it refuses and changes nothing. It is not part of `jmeterBurst`, `test`, or `check`.
+
+The same reset by hand:
+
+```bash
+docker compose exec redis redis-cli DEL sale pending
+docker compose exec postgres psql -U flashsale -d flashsale -c "TRUNCATE orders, qualification_report_sent;"
+```
