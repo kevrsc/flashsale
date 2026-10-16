@@ -1,0 +1,204 @@
+rule_files:
+  - seckill.rules.yml
+
+evaluation_interval: 10s
+
+tests:
+  # HighQueueDepth
+
+  - name: queue backs up for 2m
+    interval: 10s
+    input_series:
+      - series: 'kafka_consumer_fetch_manager_records_lag{job="otel-collector",exported_job="sale",client_id="consumer-sale-qualification-1",partition="0",topic="sale.qualification"}'
+        values: '60000x12'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: HighQueueDepth
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              topic: sale.qualification
+            exp_annotations:
+              summary: Order queue backed up
+              description: Consumer lag on sale.qualification has stayed above 50000 records for 30s.
+
+  - name: lag summed over partitions
+    interval: 10s
+    input_series:
+      - series: 'kafka_consumer_fetch_manager_records_lag{job="otel-collector",exported_job="sale",client_id="consumer-sale-qualification-1",partition="0",topic="sale.qualification"}'
+        values: '30000x12'
+      - series: 'kafka_consumer_fetch_manager_records_lag{job="otel-collector",exported_job="sale",client_id="consumer-sale-qualification-1",partition="1",topic="sale.qualification"}'
+        values: '30000x12'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: HighQueueDepth
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              topic: sale.qualification
+            exp_annotations:
+              summary: Order queue backed up
+              description: Consumer lag on sale.qualification has stayed above 50000 records for 30s.
+
+  - name: queue spike shorter than 30s stays silent
+    interval: 10s
+    input_series:
+      - series: 'kafka_consumer_fetch_manager_records_lag{job="otel-collector",exported_job="sale",client_id="consumer-sale-qualification-1",partition="0",topic="sale.qualification"}'
+        values: '60000 60000 60000 0x9'
+    alert_rule_test:
+      - eval_time: 20s
+        alertname: HighQueueDepth
+        exp_alerts: []
+      - eval_time: 40s
+        alertname: HighQueueDepth
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: HighQueueDepth
+        exp_alerts: []
+
+  - name: lag on another topic stays silent
+    interval: 10s
+    input_series:
+      - series: 'kafka_consumer_fetch_manager_records_lag{job="otel-collector",exported_job="sale",client_id="consumer-sale-qualification-1",partition="0",topic="sale.close-report"}'
+        values: '60000x12'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: HighQueueDepth
+        exp_alerts: []
+
+  - name: legacy underscore topic name is not double-counted
+    interval: 10s
+    input_series:
+      - series: 'kafka_consumer_fetch_manager_records_lag{job="otel-collector",exported_job="sale",client_id="consumer-sale-qualification-1",partition="0",topic="sale.qualification"}'
+        values: '30000x12'
+      - series: 'kafka_consumer_fetch_manager_records_lag{job="otel-collector",exported_job="sale",client_id="consumer-sale-qualification-1",partition="0",topic="sale_qualification"}'
+        values: '30000x12'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: HighQueueDepth
+        exp_alerts: []
+
+  - name: legacy underscore topic alone stays silent
+    interval: 10s
+    input_series:
+      - series: 'kafka_consumer_fetch_manager_records_lag{job="otel-collector",exported_job="sale",client_id="consumer-sale-qualification-1",partition="0",topic="sale_qualification"}'
+        values: '60000x12'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: HighQueueDepth
+        exp_alerts: []
+
+  # RedisHitRateLow
+
+  - name: edge misses after sell-out
+    interval: 10s
+    input_series:
+      - series: 'sale_qualification_total{job="otel-collector",exported_job="gateway",answer="sold_out"}'
+        values: '0+980x12'
+      - series: 'sale_qualification_total{job="otel-collector",exported_job="sale",answer="sold_out"}'
+        values: '0+20x12'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: RedisHitRateLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Gateway is not answering from the Redis hash
+              description: Under 99% of sold_out and closed answers came from the gateway hash for 60s; the rest were forwarded to sale and ran the script.
+
+  - name: edge misses on closed answers
+    interval: 10s
+    input_series:
+      - series: 'sale_qualification_total{job="otel-collector",exported_job="gateway",answer="closed"}'
+        values: '0+980x12'
+      - series: 'sale_qualification_total{job="otel-collector",exported_job="sale",answer="closed"}'
+        values: '0+20x12'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: RedisHitRateLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Gateway is not answering from the Redis hash
+              description: Under 99% of sold_out and closed answers came from the gateway hash for 60s; the rest were forwarded to sale and ran the script.
+
+  - name: edge miss that ends before 60s stays silent
+    interval: 10s
+    input_series:
+      - series: 'sale_qualification_total{job="otel-collector",exported_job="gateway",answer="sold_out"}'
+        values: '0+980x12'
+      - series: 'sale_qualification_total{job="otel-collector",exported_job="sale",answer="sold_out"}'
+        values: '0 20 40 60x9'
+    alert_rule_test:
+      - eval_time: 70s
+        alertname: RedisHitRateLow
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: RedisHitRateLow
+        exp_alerts: []
+
+  - name: edge holds
+    interval: 10s
+    input_series:
+      - series: 'sale_qualification_total{job="otel-collector",exported_job="gateway",answer="sold_out"}'
+        values: '0+9950x12'
+      - series: 'sale_qualification_total{job="otel-collector",exported_job="sale",answer="sold_out"}'
+        values: '0+50x12'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: RedisHitRateLow
+        exp_alerts: []
+
+  - name: only qualified answers stay silent
+    interval: 10s
+    input_series:
+      - series: 'sale_qualification_total{job="otel-collector",exported_job="gateway",answer="not_open"}'
+        values: '0+100x12'
+      - series: 'sale_qualification_total{job="otel-collector",exported_job="sale",answer="qualified"}'
+        values: '0+10x12'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: RedisHitRateLow
+        exp_alerts: []
+
+  - name: flat counters stay silent
+    interval: 10s
+    input_series:
+      - series: 'sale_qualification_total{job="otel-collector",exported_job="gateway",answer="sold_out"}'
+        values: '99892x12'
+      - series: 'sale_qualification_total{job="otel-collector",exported_job="sale",answer="sold_out"}'
+        values: '8x12'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: RedisHitRateLow
+        exp_alerts: []
+
+  - name: no series stays silent
+    interval: 10s
+    input_series:
+      - series: 'up{job="otel-collector"}'
+        values: '1x12'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: RedisHitRateLow
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: HighQueueDepth
+        exp_alerts: []
+
+  - name: edge forwards everything
+    interval: 10s
+    input_series:
+      - series: 'sale_qualification_total{job="otel-collector",exported_job="sale",answer="sold_out"}'
+        values: '0+100x12'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: RedisHitRateLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Gateway is not answering from the Redis hash
+              description: Under 99% of sold_out and closed answers came from the gateway hash for 60s; the rest were forwarded to sale and ran the script.

@@ -1,0 +1,31 @@
+groups:
+  - name: seckill.rules
+    rules:
+      - alert: HighQueueDepth
+        expr: |
+          sum by (topic) (
+            kafka_consumer_fetch_manager_records_lag{exported_job="sale",topic="sale.qualification"}
+          ) > 50000
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: Order queue backed up
+          description: Consumer lag on sale.qualification has stayed above 50000 records for 30s.
+
+      - alert: RedisHitRateLow
+        expr: |
+          (sum(rate(sale_qualification_total{exported_job="gateway",answer=~"sold_out|closed"}[1m])) or vector(0))
+          /
+          (
+            (sum(rate(sale_qualification_total{exported_job="gateway",answer=~"sold_out|closed"}[1m])) or vector(0))
+            +
+            (sum(rate(sale_qualification_total{exported_job="sale",answer=~"sold_out|closed"}[1m])) or vector(0))
+          )
+          < 0.99
+        for: 60s
+        labels:
+          severity: warning
+        annotations:
+          summary: Gateway is not answering from the Redis hash
+          description: Under 99% of sold_out and closed answers came from the gateway hash for 60s; the rest were forwarded to sale and ran the script.

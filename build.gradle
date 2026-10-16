@@ -38,6 +38,47 @@ def withOrders = { Closure<?> work ->
 	}
 }
 
+def prometheusRules = tasks.register('prometheusRules') {
+	group = 'verification'
+	description = 'Runs promtool check rules and test rules on prometheus/seckill.rules.yml in prom/prometheus:v3.15.0 through Docker.'
+	def rulesDir = file('prometheus')
+	def stamp = layout.buildDirectory.file('prometheusRules/passed')
+	inputs.dir(rulesDir)
+	outputs.file(stamp)
+	doLast {
+		def promtool = { List<String> args ->
+			def command = ['docker', 'run', '--rm',
+				'-v', "${rulesDir.absolutePath}:/rules:ro",
+				'-w', '/rules',
+				'--entrypoint', 'promtool',
+				'prom/prometheus:v3.15.0'] + args
+			def process = new ProcessBuilder(command*.toString())
+			process.directory(projectDir)
+			process.redirectErrorStream(true)
+			int exit
+			try {
+				def running = process.start()
+				running.inputStream.eachLine('UTF-8') { line -> logger.lifecycle(line) }
+				exit = running.waitFor()
+			} catch (IOException ex) {
+				throw new GradleException("prometheusRules: could not start docker: ${ex.message}")
+			}
+			if (exit != 0) {
+				throw new GradleException("prometheusRules: promtool ${args.join(' ')} exited ${exit}")
+			}
+		}
+		promtool(['check', 'rules', 'seckill.rules.yml'])
+		promtool(['test', 'rules', 'seckill.rules.test.yml'])
+		def passed = stamp.get().asFile
+		passed.parentFile.mkdirs()
+		passed.text = 'passed\n'
+	}
+}
+
+tasks.named('check') {
+	dependsOn prometheusRules
+}
+
 tasks.register('jmeterBurst') {
 	group = 'verification'
 	description = 'Opt-in Apache JMeter 5.6.3 burst of 100000 attempts. Not a dependency of test, check, or JaCoCo.'

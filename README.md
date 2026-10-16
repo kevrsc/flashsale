@@ -66,6 +66,17 @@ Kafka UI is `http://localhost:8088/`. Grafana is `http://localhost:3000/` and op
 
 The tests start their own PostgreSQL, Kafka, and Redis through Testcontainers, so Docker has to be running.
 
+## Alerts
+
+Prometheus loads the rule group `seckill.rules` from [`prometheus/seckill.rules.yml`](prometheus/seckill.rules.yml). There is no Alertmanager. Read alerts at `http://localhost:9090/alerts`.
+
+| Alert | Fires when | Severity |
+| --- | --- | --- |
+| `HighQueueDepth` | Consumer lag on topic `sale.qualification`, summed over partitions, stays above 50000 for 30s | `critical` |
+| `RedisHitRateLow` | Among `sold_out` and `closed` answers, the gateway's share stays below 0.99 for 60s | `warning` |
+
+Both apps push metrics every 10s. `./gradlew prometheusRules` runs `promtool check rules` and `promtool test rules` in Docker, and `check` depends on it. Details are in [docs/devops/README.md](docs/devops/README.md#alerts).
+
 ## Burst
 
 `./gradlew jmeterBurst` runs Apache JMeter 5.6.3 against a running sale and gateway. It is not part of `test` or `check`. It loads an allotment of 100, starts the sale, sends 100,000 attempts through the gateway, and passes only when 100 attempts qualified and those 100 ids each have one order row within two minutes.

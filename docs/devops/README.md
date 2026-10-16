@@ -68,6 +68,23 @@ docker compose exec redis redis-cli HGET pending <qualificationId>
 
 Leave the hashes alone from `redis-cli` while a sale is open. `HSET` on `sale` and `HDEL` on `pending` skip the script, so the pool, the flags, and the order row can disagree.
 
+## Alerts
+
+Prometheus (`localhost:9090`) evaluates group `seckill.rules` from [`prometheus/seckill.rules.yml`](../../prometheus/seckill.rules.yml) every 15s. Nothing routes notifications. Read state at `http://localhost:9090/alerts`. Prometheus reads the rules file only at startup, so run `docker compose restart prometheus` after editing it. The sale and gateway push metrics to the collector every 10s, and the collector labels each series with `exported_job` (`sale` or `gateway`).
+
+| Alert | Expression in words | For | Severity |
+| --- | --- | --- | --- |
+| `HighQueueDepth` | Sum of `kafka_consumer_fetch_manager_records_lag{exported_job="sale",topic="sale.qualification"}` above 50000 | 30s | `critical` |
+| `RedisHitRateLow` | Gateway rate of `sale_qualification_total{answer=~"sold_out\|closed"}` divided by gateway plus sale rate of the same answers, below 0.99 | 60s | `warning` |
+
+`HighQueueDepth` means the order consumer is behind on `sale.qualification`, so `HLEN pending` is growing and orders lag their qualifications. Kafka also reports each partition under the legacy name `sale_qualification`. The rule ignores it so lag is not counted twice.
+
+`RedisHitRateLow` looks only at `sold_out` and `closed`. Those answers occur only after sell-out or close, so the gateway's share of them is the share answered from hash `sale` without `EVAL`. A low share means the gateway is forwarding attempts it should answer itself. Check `HGETALL sale` for `soldOut`, `remaining`, and `closed`. A missing side counts as 0. With no such answers the ratio has no value and the alert stays silent.
+
+A healthy 100,000-attempt burst keeps both inactive. Lag returned to 0 after the burst, and the gateway answered 99879 of 99900 `sold_out` answers. The lowest 1-minute share, right after sell-out, was about 0.994.
+
+`./gradlew prometheusRules` runs `promtool check rules` and `promtool test rules` against [`prometheus/seckill.rules.test.yml`](../../prometheus/seckill.rules.test.yml) in `prom/prometheus:v3.15.0`. `./gradlew check` depends on it.
+
 ## Local burst reset
 
 `./gradlew jmeterReset -PconfirmReset=local` deletes both hashes and truncates `orders` and `qualification_report_sent`, so `./gradlew jmeterBurst` can run again. It is for the local learning sale only. Never run it in production: it removes every order and every qualification still waiting in `pending`, and nothing can rebuild them.
