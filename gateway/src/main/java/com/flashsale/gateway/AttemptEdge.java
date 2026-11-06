@@ -5,24 +5,23 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
-
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
-import org.springframework.web.servlet.function.ServerRequest;
 import org.springframework.web.servlet.function.ServerResponse;
+
+import io.micrometer.core.instrument.MeterRegistry;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 @Component
 public class AttemptEdge {
 
 	private static final Logger log = LoggerFactory.getLogger(AttemptEdge.class);
 
-	private static final List<Object> FIELDS = List.of("closed", "open", "soldOut", "remaining");
+	private static final List<Object> FIELDS = List.of("open", "closed", "soldOut", "remaining");
 
 	private final StringRedisTemplate redis;
 	private final JsonMapper json;
@@ -38,30 +37,25 @@ public class AttemptEdge {
 		if (userId == null || userId.isBlank()) {
 			return Optional.of("unidentified");
 		}
-		List<Object> values = redis.opsForHash().multiGet("sale", FIELDS);
-		String closed = flag(values.get(0));
-		String open = flag(values.get(1));
-		String soldOut = flag(values.get(2));
-		String remaining = values.get(3) == null ? "0" : values.get(3).toString();
-		if ("1".equals(closed)) {
+		Map<String, String> sale = read();
+		if ("1".equals(sale.get("closed"))) {
 			return Optional.of("closed");
 		}
-		if ("0".equals(open)) {
+		if ("0".equals(sale.get("open"))) {
 			return Optional.of("not_open");
 		}
-		if ("1".equals(soldOut) || "0".equals(remaining)) {
+		if ("1".equals(sale.get("soldOut")) || "0".equals(sale.get("remaining"))) {
 			return Optional.of("sold_out");
 		}
 		return Optional.empty();
 	}
 
 	public Map<String, String> read() {
-		List<Object> values = redis.opsForHash().multiGet("sale", List.of("open", "closed", "soldOut", "remaining"));
+		List<Object> values = redis.opsForHash().multiGet("sale", FIELDS);
 		Map<String, String> body = new LinkedHashMap<>();
-		body.put("open", flag(values.get(0)));
-		body.put("closed", flag(values.get(1)));
-		body.put("soldOut", flag(values.get(2)));
-		body.put("remaining", values.get(3) == null ? "0" : values.get(3).toString());
+		for (int i = 0; i < FIELDS.size(); i++) {
+			body.put(FIELDS.get(i).toString(), field(values.get(i)));
+		}
 		return body;
 	}
 
@@ -81,8 +75,7 @@ public class AttemptEdge {
 				return "";
 			}
 			return userId.asString();
-		}
-		catch (RuntimeException ex) {
+		} catch (RuntimeException ex) {
 			return "";
 		}
 	}
@@ -94,7 +87,7 @@ public class AttemptEdge {
 				.body("{\"answer\":\"" + answer + "\"}");
 	}
 
-	private static String flag(Object value) {
+	private static String field(Object value) {
 		return value == null ? "0" : value.toString();
 	}
 

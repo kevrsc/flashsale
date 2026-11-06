@@ -28,6 +28,7 @@ flowchart LR
     db[(PostgreSQL orders)]
 
     client -->|"POST /attempts"| gateway
+    client -->|"GET /sale"| gateway
     gateway -->|"HMGET"| redis
     gateway -->|"forward when the pool may have a unit"| sale
     sale -->|"EVAL sale.lua"| redis
@@ -37,6 +38,246 @@ flowchart LR
 ```
 
 The gateway answers `not_open`, `closed`, `sold_out`, and `unidentified` from the Redis hash without running the script. Only an attempt that could still take a unit is forwarded. The script decrements and stores the qualification document in the same execution. Kafka carries that document to the order consumer, which inserts one row per qualification id.
+
+`GET /sale` is that same hash read for a caller that is not attempting. `SaleRead` calls `AttemptEdge.read`, which returns `open`, `closed`, `soldOut`, and `remaining`. A missing field is `0`. The call does not choose an attempt answer, forward to sale, or run the script, and `remaining` is unchanged.
+
+## Diagrams
+
+### Sale states
+
+The hash `sale` holds `itemId`, `allotment`, `remaining`, `soldOut`, `open`, `closed`, and, after the first close, `closeRemaining`. `load` and `start` apply only while `open` and `closed` are both `0`. A second load in that window replaces the allotment. `close` applies in every state. The first close stores `closeRemaining`. A later close returns that stored count.
+
+Sold out means an open sale whose attempts answer `sold_out`. That is `remaining` of `0`, or `soldOut` of `1`. The flag becomes `1` in the attempt that decrements the last unit. A sale started with allotment `0` already answers `sold_out`, and the flag is still `0`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Absent
+    Absent --> Loaded: load
+    Absent --> Closed: close
+    Loaded --> Loaded: load again
+    Loaded --> Open: start with remaining above 0
+    Loaded --> SoldOut: start with remaining 0
+    Loaded --> Closed: close
+    Open --> Open: attempt leaves a unit
+    Open --> SoldOut: attempt takes the last unit
+    Open --> Closed: close
+    SoldOut --> SoldOut: attempt answers sold_out
+    SoldOut --> Closed: close
+    Closed --> Closed: close again
+```
+
+### Classes
+
+`AttemptEdge` reads the hash with `HMGET` and either answers or lets the route forward. `SaleScript` is the caller of `EVAL sale.lua`, which is the decrement. After the response, `QualificationRelay` publishes the `pending` hash to `sale.qualification`. `OrderInsert` writes the order, then acks. `QualificationReportPublisher` and `CloseReport` publish the other two topics. `ExportShed` runs span and log export through the same guard.
+
+Each breaker uses a window of 4 calls, opens at a 50 percent failure rate, and stays open for 30 seconds. Export times out at 2 seconds. A failed, timed-out, or open-breaker export is dropped. Insert and report time out at 5 seconds, and an open breaker still runs those calls.
+
+```mermaid
+classDiagram
+    direction TB
+
+    class AttemptRoutes {
+        <<gateway>>
+        +POST /attempts
+    }
+    class AttemptEdge {
+        <<gateway>>
+        +answer(userId) Optional
+        +read() Map
+    }
+    class SaleRead {
+        <<gateway>>
+        +GET /sale
+    }
+    class AttemptApi {
+        <<sale>>
+        +POST /attempts
+    }
+    class SaleLifecycleApi {
+        <<sale>>
+        +POST /sales/load
+        +POST /sales/start
+        +POST /sales/close
+    }
+    class SaleScript {
+        <<sale>>
+        +load() boolean
+        +start() boolean
+        +close() String
+        +attempt(userId) String
+        +ack(qualificationId)
+        +pending(qualificationId) String
+    }
+    class QualificationRelay {
+        <<sale>>
+        +afterCompletion()
+        +republish()
+    }
+    class CloseReport {
+        <<sale>>
+        +publish(body)
+    }
+    class OrderListener {
+        <<sale>>
+        +onQualification(document)
+    }
+    class OrderInsert {
+        <<sale>>
+        +accept(document)
+    }
+    class QualificationReportPublisher {
+        <<sale>>
+        +publishPending()
+    }
+    class DownstreamGuard {
+        <<sale>>
+        +export(call)
+        +insert(call)
+        +reportUntilAck(call)
+    }
+    class ExportShed {
+        <<sale>>
+        +wrap(exporter)
+    }
+    class Redis {
+        <<Redis>>
+        sale hash
+        pending hash
+    }
+    class Kafka {
+        <<Kafka>>
+    }
+    class PostgreSQL {
+        <<PostgreSQL>>
+        orders
+        qualification_report_sent
+    }
+
+    SaleRead --> AttemptEdge
+    AttemptRoutes --> AttemptEdge
+    AttemptRoutes ..> AttemptApi : HTTP forward
+    AttemptEdge --> Redis : HMGET sale
+    AttemptApi --> SaleScript
+    SaleLifecycleApi --> SaleScript
+    SaleLifecycleApi --> CloseReport
+    SaleScript --> Redis : EVAL sale.lua and HGET pending
+    AttemptApi ..> QualificationRelay : DOCUMENT attribute
+    QualificationRelay --> Redis : HGETALL pending
+    QualificationRelay --> Kafka : sale.qualification
+    Kafka ..> OrderListener : deliver sale.qualification
+    OrderListener --> OrderInsert
+    OrderInsert --> DownstreamGuard : insert
+    OrderInsert --> PostgreSQL : orders
+    OrderInsert --> SaleScript : ack after commit
+    QualificationReportPublisher --> PostgreSQL : orders and sent
+    QualificationReportPublisher --> DownstreamGuard : reportUntilAck
+    QualificationReportPublisher --> Kafka : sale.qualification-report
+    CloseReport --> DownstreamGuard : reportUntilAck
+    CloseReport --> Kafka : sale.close-report
+    ExportShed --> DownstreamGuard : export
+```
+
+### Records
+
+`pending` is a Redis hash. The field is the qualification id. The value is JSON with `qualificationId`, `saleId` (the literal `sale`), `userId`, and `itemId`. `ack` deletes that field after the order row commits. Both PostgreSQL primary keys are that same qualification id. A second delivery leaves the existing order row in place. The sent row is inserted once, after the report send returns.
+
+```mermaid
+erDiagram
+    orders {
+        text qualification_id PK
+        text sale_id
+        text user_id
+        text item_id
+    }
+    qualification_report_sent {
+        text qualification_id PK
+    }
+    orders ||--o| qualification_report_sent : report recorded
+```
+
+### One attempt
+
+`POST /attempts` on the gateway. The order insert and the qualification report run after the HTTP response. The listener commits `orders` before `ack` deletes the pending field. Producer sends use `acks=all`. The offset is acknowledged only after `accept` returns. A failed accept is retried every 200ms with no attempt limit.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant Routes as AttemptRoutes
+    participant Edge as AttemptEdge
+    participant Api as AttemptApi
+    participant Script as SaleScript
+    participant Redis
+    participant Relay as QualificationRelay
+    participant Kafka
+    participant Listener as OrderListener
+    participant Insert as OrderInsert
+    participant Guard as DownstreamGuard
+    participant DB as PostgreSQL
+    participant Report as QualificationReportPublisher
+
+    Client->>Routes: POST /attempts
+    Routes->>Edge: userId from the body
+    alt userId is blank
+        Edge-->>Routes: unidentified
+        Note over Edge: counter sale.qualification
+        Routes-->>Client: HTTP 200 unidentified
+    else userId is present
+        Edge->>Redis: HMGET sale open closed soldOut remaining
+        Note over Edge: a missing field is read as 0
+        alt closed, not open, sold out, or remaining 0
+            Edge-->>Routes: closed, not_open, or sold_out
+            Note over Edge: counter sale.qualification
+            Routes-->>Client: HTTP 200
+        else the pool may still have a unit
+            Routes->>Api: forward the cached body to sale port 8081
+            Api->>Script: attempt userId
+            Script->>Redis: EVAL sale.lua attempt
+            Note over Script,Redis: sale.lua command attempt
+            alt closed, or remaining already 0
+                Redis-->>Script: sold_out or closed, with no write
+                Script-->>Api: JSON
+                Note over Api: counter sale.qualification
+                Api-->>Routes: HTTP 200
+                Routes-->>Client: HTTP 200
+            else a unit is taken
+                Note over Redis: HSET remaining and soldOut. On zero, soldOut becomes 1
+                Note over Redis: qualificationId is 32 hex chars of SHA1 of the length-prefixed userId, remaining before the decrement, and Redis TIME, written 8-4-4-4-12
+                Note over Redis: HSET pending with qualificationId, saleId, userId, and itemId
+                Redis-->>Script: qualified and qualificationId
+                Script-->>Api: JSON
+                Note over Api: counter sale.qualification
+                Api->>Script: pending qualificationId
+                Script->>Redis: HGET pending
+                Redis-->>Api: qualification document
+                Note over Api: request attribute DOCUMENT. A missing document still returns qualified, and republish is then the publisher
+                Api-->>Routes: HTTP 200 qualified
+                Routes-->>Client: HTTP 200 qualified
+                Note over Relay: afterCompletion starts a virtual thread. Every 200ms, republish sends each pending field until ack deletes it
+                Relay->>Kafka: send sale.qualification, key qualificationId, acks all, wait 2s
+                Kafka->>Listener: group sale-qualification, manual ack
+                Listener->>Insert: accept document
+                Insert->>Guard: insert
+                Note over Guard: an open insert breaker still runs the insert
+                Guard->>DB: INSERT orders ON CONFLICT DO NOTHING
+                DB-->>Guard: commit
+                Guard-->>Insert: returned
+                Insert->>Script: ack qualificationId
+                Script->>Redis: EVAL sale.lua ack
+                Redis-->>Script: HDEL pending
+                Listener->>Kafka: acknowledge the offset
+                Note over Report: separate schedule, every 200ms
+                Report->>DB: orders with no qualification_report_sent row
+                Report->>Guard: reportUntilAck, up to 3 tries
+                Note over Guard: an open report breaker still runs the send
+                Guard->>Kafka: send sale.qualification-report, key qualificationId, acks all, wait 3s
+                Guard-->>Report: returned
+                Report->>DB: INSERT qualification_report_sent ON CONFLICT DO NOTHING
+                Note over Report: the sent row is inserted only after the send returns
+            end
+        end
+    end
+```
 
 ## HTTP
 
