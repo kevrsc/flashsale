@@ -27,6 +27,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -79,6 +81,9 @@ class SaleHotPathTest {
 
 	@Autowired
 	private QualificationOrderGate gate;
+
+	@Autowired
+	private MeterRegistry meters;
 
 	@MockitoSpyBean
 	private SaleScript script;
@@ -284,6 +289,22 @@ class SaleHotPathTest {
 	}
 
 	@Test
+	void directAttemptsCountTowardTheSaleSideOfRedisHitRate() throws Exception {
+		load("sku-1", 0);
+		start();
+		double soldOut = answers("sold_out");
+		double closed = answers("closed");
+		assertEquals("sold_out", attempt("ada").get("answer").asString());
+		assertEquals("sold_out", attempt("bea").get("answer").asString());
+		assertEquals(soldOut + 2, answers("sold_out"));
+		close();
+		assertEquals("closed", attempt("cy").get("answer").asString());
+		assertEquals(closed + 1, answers("closed"));
+		assertEquals("0", hash("remaining"));
+		assertEquals(0, orders());
+	}
+
+	@Test
 	void quotedUserIdIsStoredOnce() throws Exception {
 		load("sku-1", 1);
 		start();
@@ -356,6 +377,11 @@ class SaleHotPathTest {
 
 	private int orders() {
 		return jdbc.queryForObject("SELECT COUNT(*) FROM orders", Integer.class);
+	}
+
+	private double answers(String answer) {
+		Counter counter = meters.find("sale.qualification").tag("answer", answer).counter();
+		return counter == null ? 0 : counter.count();
 	}
 
 	private int count(String qualificationId) {
